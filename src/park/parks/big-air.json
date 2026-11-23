@@ -1,0 +1,165 @@
+{
+  "id": "big-air",
+  "name": "Big Air Ridge",
+  "description": "Steep in-run, three huge tables and a pair of warm-up rails. Built for double corks.",
+  "seed": 4242,
+  "terrain": {
+    "length": 720,
+    "halfWidth": 42,
+    "bankHeight": 4,
+    "noiseAmplitude": 0.18,
+    "slopeProfile": [
+      {
+        "z": -60,
+        "deg": 1
+      },
+      {
+        "z": 0,
+        "deg": 2
+      },
+      {
+        "z": 25,
+        "deg": 20
+      },
+      {
+        "z": 110,
+        "deg": 16
+      },
+      {
+        "z": 160,
+        "deg": 9
+      },
+      {
+        "z": 219,
+        "deg": 7
+      },
+      {
+        "z": 231,
+        "deg": 28
+      },
+      {
+        "z": 259,
+        "deg": 28
+      },
+      {
+        "z": 273,
+        "deg": 7
+      },
+      {
+        "z": 344,
+        "deg": 7
+      },
+      {
+        "z": 356,
+        "deg": 28
+      },
+      {
+        "z": 393,
+        "deg": 28
+      },
+      {
+        "z": 407,
+        "deg": 7
+      },
+      {
+        "z": 479,
+        "deg": 7
+      },
+      {
+        "z": 491,
+        "deg": 28
+      },
+      {
+        "z": 537,
+        "deg": 28
+      },
+      {
+        "z": 551,
+        "deg": 7
+      },
+      {
+        "z": 620,
+        "deg": 6
+      },
+      {
+        "z": 710,
+        "deg": 1
+      }
+    ]
+  },
+  "spawn": {
+    "x": 0,
+    "z": -12
+  },
+  "finishZ": 670,
+  "features": [
+    {
+      "id": "ba1",
+      "type": "kicker",
+      "label": "L",
+      "x": 0,
+      "z": 200,
+      "width": 7,
+      "height": 2.4,
+      "takeoffAngleDeg": 34,
+      "gap": 13,
+      "deckHeight": 2.3,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "ba2",
+      "type": "kicker",
+      "label": "XL",
+      "x": 0,
+      "z": 320,
+      "width": 8,
+      "height": 2.8,
+      "takeoffAngleDeg": 35,
+      "gap": 17,
+      "deckHeight": 2.7,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "ba3",
+      "type": "kicker",
+      "label": "XXL",
+      "x": 0,
+      "z": 450,
+      "width": 9,
+      "height": 3.2,
+      "takeoffAngleDeg": 36,
+      "gap": 21,
+      "deckHeight": 3.1,
+      "landingAngleDeg": 10
+    }
+  ],
+  "rails": [
+    {
+      "id": "warmup-box",
+      "label": "Warm-up Box",
+      "kind": "box",
+      "shape": "straight",
+      "width": 0.6,
+      "entryRamp": true,
+      "points": [
+        [-14, 0.45, 140],
+        [-14, 0.45, 154]
+      ]
+    },
+    {
+      "id": "warmup-rail",
+      "label": "Warm-up Rail",
+      "kind": "rail",
+      "shape": "straight",
+      "entryRamp": true,
+      "points": [
+        [14, 0.5, 140],
+        [14, 0.5, 154]
+      ]
+    }
+  ],
+  "trees": {
+    "count": 700,
+    "corridorMargin": 12
+  }
+}

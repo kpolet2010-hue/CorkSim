@@ -1,0 +1,350 @@
+{
+  "id": "glacier-park",
+  "name": "Glacier Park",
+  "description": "A full-length slopestyle course: rail garden, a three-jump progression line, a big side hit and a rail-to-rail section.",
+  "seed": 1337,
+  "terrain": {
+    "length": 1000,
+    "halfWidth": 48,
+    "bankHeight": 3.5,
+    "noiseAmplitude": 0.22,
+    "slopeProfile": [
+      {
+        "z": -60,
+        "deg": 1
+      },
+      {
+        "z": 0,
+        "deg": 2
+      },
+      {
+        "z": 25,
+        "deg": 17
+      },
+      {
+        "z": 90,
+        "deg": 14
+      },
+      {
+        "z": 130,
+        "deg": 11
+      },
+      {
+        "z": 280,
+        "deg": 11
+      },
+      {
+        "z": 300,
+        "deg": 8
+      },
+      {
+        "z": 336,
+        "deg": 8
+      },
+      {
+        "z": 348,
+        "deg": 24
+      },
+      {
+        "z": 362,
+        "deg": 24
+      },
+      {
+        "z": 374,
+        "deg": 6
+      },
+      {
+        "z": 413,
+        "deg": 7
+      },
+      {
+        "z": 425,
+        "deg": 26
+      },
+      {
+        "z": 452,
+        "deg": 26
+      },
+      {
+        "z": 466,
+        "deg": 6
+      },
+      {
+        "z": 516,
+        "deg": 7
+      },
+      {
+        "z": 528,
+        "deg": 27
+      },
+      {
+        "z": 562,
+        "deg": 27
+      },
+      {
+        "z": 576,
+        "deg": 6
+      },
+      {
+        "z": 620,
+        "deg": 7
+      },
+      {
+        "z": 632,
+        "deg": 27
+      },
+      {
+        "z": 664,
+        "deg": 27
+      },
+      {
+        "z": 678,
+        "deg": 8
+      },
+      {
+        "z": 700,
+        "deg": 11
+      },
+      {
+        "z": 880,
+        "deg": 9
+      },
+      {
+        "z": 950,
+        "deg": 4
+      },
+      {
+        "z": 1010,
+        "deg": 1
+      }
+    ]
+  },
+  "spawn": {
+    "x": 0,
+    "z": -12
+  },
+  "finishZ": 960,
+  "features": [
+    {
+      "id": "k1",
+      "type": "kicker",
+      "label": "S",
+      "x": 0,
+      "z": 328,
+      "width": 5,
+      "height": 1.2,
+      "takeoffAngleDeg": 30,
+      "gap": 5,
+      "deckHeight": 1.1,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "k2",
+      "type": "kicker",
+      "label": "M",
+      "x": 0,
+      "z": 398,
+      "width": 6,
+      "height": 1.7,
+      "takeoffAngleDeg": 32,
+      "gap": 11,
+      "deckHeight": 1.6,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "k3",
+      "type": "kicker",
+      "label": "L",
+      "x": 0,
+      "z": 494,
+      "width": 7,
+      "height": 2.2,
+      "takeoffAngleDeg": 34,
+      "gap": 17,
+      "deckHeight": 2.1,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "k4",
+      "type": "kicker",
+      "label": "XL",
+      "x": -24,
+      "z": 600,
+      "width": 7,
+      "height": 2.6,
+      "takeoffAngleDeg": 34,
+      "gap": 16,
+      "deckHeight": 2.5,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "k5",
+      "type": "kicker",
+      "label": "M",
+      "x": 22,
+      "z": 604,
+      "width": 6,
+      "height": 1.7,
+      "takeoffAngleDeg": 32,
+      "gap": 12,
+      "deckHeight": 1.6,
+      "landingAngleDeg": 10
+    },
+    {
+      "id": "r-roller1",
+      "type": "roller",
+      "x": 0,
+      "z": 860,
+      "width": 40,
+      "length": 16,
+      "height": 1.2
+    },
+    {
+      "id": "r-roller2",
+      "type": "roller",
+      "x": 0,
+      "z": 890,
+      "width": 40,
+      "length": 14,
+      "height": 0.9
+    }
+  ],
+  "rails": [
+    {
+      "id": "flatbox",
+      "label": "Flat Box",
+      "kind": "box",
+      "shape": "straight",
+      "width": 0.55,
+      "entryRamp": true,
+      "points": [
+        [-16, 0.45, 140],
+        [-16, 0.45, 153]
+      ]
+    },
+    {
+      "id": "downrail",
+      "label": "Down Rail",
+      "kind": "rail",
+      "shape": "down",
+      "entryRamp": true,
+      "points": [
+        [12, 1.1, 142],
+        [12, 0.45, 154]
+      ]
+    },
+    {
+      "id": "kinkrail",
+      "label": "Flat-Down Rail",
+      "kind": "rail",
+      "shape": "kinked",
+      "entryRamp": true,
+      "points": [
+        [0, 0.5, 185],
+        [0, 1.45, 190.5],
+        [0, 0.6, 201]
+      ]
+    },
+    {
+      "id": "curvebox",
+      "label": "Curved Box",
+      "kind": "box",
+      "shape": "curved",
+      "width": 0.5,
+      "smooth": true,
+      "entryRamp": true,
+      "points": [
+        [-22, 0.45, 205],
+        [-20, 0.45, 211],
+        [-17.5, 0.45, 216],
+        [-16, 0.45, 222]
+      ]
+    },
+    {
+      "id": "rainbow",
+      "label": "Rainbow Box",
+      "kind": "box",
+      "shape": "rainbow",
+      "width": 0.5,
+      "smooth": true,
+      "entryRamp": true,
+      "points": [
+        [20, 0.45, 205],
+        [20, 1.25, 211.5],
+        [20, 0.45, 218]
+      ]
+    },
+    {
+      "id": "uprail",
+      "label": "Up Rail",
+      "kind": "rail",
+      "shape": "up",
+      "entryRamp": true,
+      "points": [
+        [-9, 0.45, 245],
+        [-9, 1.3, 255]
+      ]
+    },
+    {
+      "id": "straightrail",
+      "label": "Straight Rail",
+      "kind": "rail",
+      "shape": "straight",
+      "entryRamp": true,
+      "points": [
+        [9, 0.55, 248],
+        [9, 0.55, 262]
+      ]
+    },
+    {
+      "id": "transfer1",
+      "label": "Transfer Rail A",
+      "kind": "rail",
+      "shape": "straight",
+      "entryRamp": true,
+      "points": [
+        [-4, 0.55, 720],
+        [-4, 0.55, 731]
+      ]
+    },
+    {
+      "id": "transfer2",
+      "label": "Transfer Rail B",
+      "kind": "rail",
+      "shape": "down",
+      "points": [
+        [-4, 0.7, 735],
+        [-4, 0.45, 746]
+      ]
+    },
+    {
+      "id": "downbox",
+      "label": "Down Box",
+      "kind": "box",
+      "shape": "down",
+      "width": 0.6,
+      "entryRamp": true,
+      "points": [
+        [14, 0.9, 730],
+        [14, 0.4, 745]
+      ]
+    },
+    {
+      "id": "kinkbox",
+      "label": "Down-Flat Box",
+      "kind": "box",
+      "shape": "kinked",
+      "width": 0.55,
+      "entryRamp": true,
+      "points": [
+        [28, 1, 770],
+        [28, 0.45, 779],
+        [28, 0.9, 786]
+      ]
+    }
+  ],
+  "trees": {
+    "count": 900,
+    "corridorMargin": 14
+  }
+}
