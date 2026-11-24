@@ -10,17 +10,28 @@ export interface TerrainMeshOptions {
   receiveShadow: boolean;
 }
 
+/** Backdrop colouring per park (see parkTheme.ts). */
+export interface BackdropLook {
+  rockColor: number;
+  iceColor: number;
+  /** 0..1 share of high, moderately steep slopes that read as glacier ice. */
+  glacier: number;
+}
+
 const _c = new Color();
 
 function shadeVertex(park: Park, x: number, z: number, ny: number, out: Color): Color {
-  // Subtle colour variation: blue-ish in steeper/shaded banks, warm white on groomed snow.
+  // Albedo multiplier on top of the snow material colour. The piste stays clean and bright; off-piste snow
+  // gets wind-blown macro variation; steep banks shift cool (they mostly face away from the sun and pick up
+  // sky light), which keeps the corridor edges and the terrain shape readable.
   const half = park.config.terrain.halfWidth;
-  const outside = smoothstep(half - 4, half + 12, Math.abs(x));
-  const n = fbm2(x * 0.05, z * 0.05, 91, 2) * 0.5 + 0.5;
-  const steep = smoothstep(0.92, 0.6, ny);
-  const r = 0.97 - outside * 0.04 - n * 0.03 - steep * 0.25;
-  const g = 0.98 - outside * 0.02 - n * 0.02 - steep * 0.22;
-  const b = 1.0 - steep * 0.12;
+  const outside = smoothstep(half - 2, half + 14, Math.abs(x));
+  const n = fbm2(x * 0.045, z * 0.045, 91, 3) * 0.5 + 0.5;
+  const drift = fbm2(x * 0.012, z * 0.02, 57, 2) * 0.5 + 0.5;
+  const steep = smoothstep(0.95, 0.62, ny);
+  const r = 1.0 - outside * (0.03 + n * 0.05 + drift * 0.03) - steep * 0.2;
+  const g = 1.0 - outside * (0.02 + n * 0.035 + drift * 0.02) - steep * 0.13;
+  const b = 1.0 - outside * n * 0.01 - steep * 0.03;
   return out.setRGB(r, g, b);
 }
 
@@ -104,7 +115,11 @@ export function buildTerrainMesh(park: Park, material: Material, opts: TerrainMe
  * Distant mountain range surrounding the park. Low resolution, no shadows; it dips under the playable
  * terrain where they overlap.
  */
-export function buildBackdropMountains(park: Park, material: Material): Mesh {
+export function buildBackdropMountains(
+  park: Park,
+  material: Material,
+  look: BackdropLook = { rockColor: 0x4b4d55, iceColor: 0x8fc2dc, glacier: 0.3 },
+): Mesh {
   const size = 5200;
   const n = 150;
   const cz = park.config.terrain.length / 2;
@@ -156,15 +171,31 @@ export function buildBackdropMountains(park: Park, material: Material): Mesh {
   geo.setAttribute('position', new BufferAttribute(pos, 3));
   geo.setIndex(new BufferAttribute(idx, 1));
   geo.computeVertexNormals();
-  // Rock shows on steep faces, snow elsewhere.
+  // Rock on steep faces (with strata banding and snow caught on ledges), glacier ice on high steep-ish
+  // slopes, a dark forested band at the tree line, snow elsewhere.
   const nor = geo.getAttribute('normal');
+  const snowC = new Color(0.96, 0.975, 1);
+  const rockC = new Color(look.rockColor);
+  const rockDark = rockC.clone().multiplyScalar(0.62);
+  const iceC = new Color(look.iceColor);
+  const forestC = new Color(0.13, 0.2, 0.16);
+  const tmp = new Color();
   for (let v = 0; v < (n + 1) * (n + 1); v++) {
     const ny = nor.getY(v);
-    const rock = smoothstep(0.82, 0.55, ny);
+    const x = pos[v * 3];
     const y = pos[v * 3 + 1];
+    const z = pos[v * 3 + 2];
+    const breakup = fbm2(x / 60, z / 60, park.config.seed + 21, 3) * 0.12;
+    const rock = smoothstep(0.88 + breakup, 0.66 + breakup, ny);
+    const strata = 0.5 + 0.5 * Math.sin(y * 0.09 + fbm2(x / 90, z / 90, park.config.seed + 5, 2) * 4);
+    tmp.copy(rockC).lerp(rockDark, strata * 0.7);
+    // Ledges: snow sticks where the face is only moderately steep.
+    const ledge = smoothstep(0.5, 0.7, strata) * smoothstep(0.55, 0.72, ny);
+    const glacier = look.glacier * smoothstep(40, 220, y) * smoothstep(0.92, 0.74, ny) * (1 - rock);
     const treeline = smoothstep(-260, -120, y) * (1 - smoothstep(-60, 80, y));
-    _c.setRGB(0.95, 0.97, 1).lerp(new Color(0.36, 0.37, 0.41), rock);
-    _c.lerp(new Color(0.42, 0.5, 0.52), treeline * 0.25 * (1 - rock));
+    _c.copy(snowC).lerp(iceC, Math.min(1, glacier * 1.6));
+    _c.lerp(tmp, rock * (1 - ledge * 0.6));
+    _c.lerp(forestC, treeline * 0.55 * (1 - rock) * (1 - glacier));
     col[v * 3] = _c.r;
     col[v * 3 + 1] = _c.g;
     col[v * 3 + 2] = _c.b;

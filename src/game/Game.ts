@@ -22,7 +22,7 @@ import { buildCameraTarget } from '../render/cameraTarget';
 import { Effects } from '../render/Effects';
 import { Environment } from '../render/Environment';
 import { ParkMeshes } from '../render/ParkMeshes';
-import { buildSkierPose } from '../render/poseFromSim';
+import { buildSkierPose, createSkierPoseInput } from '../render/poseFromSim';
 import { QUALITY, type QualityProfile } from '../render/quality';
 import { SkierAnimator } from '../render/SkierAnimator';
 import { SkierModel } from '../render/SkierModel';
@@ -78,6 +78,8 @@ export class Game {
   readonly audio: AudioSystem;
   private settings: GameSettings;
   private quality: QualityProfile;
+  /** Reused every frame so the pose mapping does not allocate. */
+  private readonly poseInput = createSkierPoseInput();
   private readonly prevPos = new Vector3();
   private readonly currPos = new Vector3();
   private readonly prevQuat = new Quaternion();
@@ -153,6 +155,8 @@ export class Game {
     this.snapVisuals();
     // Compile shaders up front to avoid a hitch on the first frame.
     this.renderer!.compile(this.scene, this.camera);
+    // Also build and compile the post-processing chain so the first visible frame does not stall.
+    this.environment!.warmUp(this.camera);
     report(1, 'Ready');
     (window as unknown as { __FREESKI__?: unknown }).__FREESKI__ = { game: this, sim: this.sim };
     return true;
@@ -172,7 +176,6 @@ export class Game {
     }
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.74;
     renderer.shadowMap.enabled = q.shadows;
     renderer.shadowMap.type = PCFSoftShadowMap;
     renderer.domElement.className = 'game-canvas';
@@ -228,7 +231,8 @@ export class Game {
   }
 
   private buildSkier(): void {
-    this.skier = new SkierModel(undefined, this.quality.shadows);
+    // Lighter skier geometry on the low preset.
+    this.skier = new SkierModel(undefined, this.quality.shadows, this.settings.graphics === 'low' ? 0.6 : 1);
     this.scene.add(this.skier.root);
   }
 
@@ -359,7 +363,7 @@ export class Game {
     this.skier.root.position.lerpVectors(this.prevPos, this.currPos, alpha);
     this.skier.root.quaternion.slerpQuaternions(this.prevQuat, this.currQuat, alpha);
     if (!this.paused) {
-      this.animator.update(this.skier, buildSkierPose(sim.player, this.renderTime), dt);
+      this.animator.update(this.skier, buildSkierPose(sim.player, this.renderTime, this.poseInput), dt);
       this.cameraCtl.update(this.cameraTarget(), dt);
       this.effects?.update(sim, this.camera.position, dt);
       this.camera.getWorldDirection(_fwd);

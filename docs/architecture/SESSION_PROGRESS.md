@@ -1,5 +1,78 @@
 # Session Progress — Freeski Quality Transformation
 
+## Resumed 2026-11-24 (session 2)
+
+- State verified: tree clean, `main` = `origin/main` = `5d74a98`, no project servers or agents running.
+- Baseline re-run: typecheck, lint and 111/111 Vitest pass; `FREESKI_GPU=1 npx playwright test` passes
+  10/10 (51 s).
+- The user chose **sequential** execution. Order: WP-1 → WP-2 → WP-5 → WP-3 → WP-4 → WP-6 → WP-7.
+- **WP-1 (graphics) dispatched** to `graphics-environment-engineer`. The other packages are waiting.
+- **WP-1 acceptance (the user's requirement):** tests passing is not enough. WP-1 counts as done only when
+  it looks clearly better than the baseline:
+  - **Screenshots:** compare against the baseline with identical fixed views in both parks, using
+    `scripts/compare-views.mjs` (13 views: spawn, rail garden, jump line, knuckle/landing, side hits, carve
+    spray, air, landing burst, grind; Big Air: spawn, XL jump, warm-up rails, riding).
+  - **Performance:** measure on the real GPU (`perf` flag), baseline and new back to back under the same
+    load. Note that Edge renders on the **AMD Radeon RX 9070** (D3D11), not the Intel iGPU mentioned earlier.
+  - **Regressions:** document all regressions and unresolved problems.
+  - **If it isn't convincing:** keep improving WP-1 before starting WP-2.
+- **Baseline setup:**
+  - Git worktree of `5d74a98` in the session scratchpad (`baseline-wt`, `node_modules` as a junction).
+  - Build served with `npx vite preview --port 5199`.
+  - Baseline screenshots in `scratchpad/cmp-baseline/`. Baseline perf is not yet measured (it must run back
+    to back with the new build).
+  - Remove the worktree afterwards with `git worktree remove`.
+- **WP-1 iteration 1 reviewed: not accepted.** All 121 tests passed and so did the e2e run, but the
+  side-by-side comparison (`scripts/side-by-side.mjs`, composites in `scratchpad/sbs/`) showed:
+  - Gains: mountains, sidelight and shadows, fences, lift, sky, Big Air theme.
+  - Particles are weaker than the baseline (carve spray and landing burst are barely visible).
+  - The corduroy looks synthetic and shows moiré.
+  - The snow reads grey or beige.
+  - The knuckle and landing are unreadable from the table, and the lip dye line is a full-width blue band.
+  - The horizon sky is pale.
+- **Perf, real GPU (RX 9070, High preset, vsync off):**
+  - Mean 911 → 699 fps (about +23% frame cost); p95 ≤ 2.2 ms.
+  - Draw calls −30 to −40%; triangles +35%; shader programs 15 → 41.
+  - 37 ms hitch on the first frame. The fix is `Environment.warmUp` plus a call in `Game.init` (WP-6).
+- **Iteration 2:** sent back to the same agent with concrete targets.
+- **WP-1 iteration 2 reviewed: a clear improvement** (composites in `scratchpad/sbs2/`).
+  - Accepted: bright snow with blue shadows, subtle corduroy without aliasing, deep blue sky, rock structure on
+    the mountains, Big Air no longer beige, visible spray, sparks and snow flecks.
+  - Perf back to back (RX 9070, High, uncapped): mean 804 → 759 fps. Run-to-run noise is about ±15%, so the
+    real extra cost is about 5–15%. p95 < 2 ms. Draw calls −10 to −25%.
+  - The first-frame hitch dropped from 37.7 to 19.8 ms.
+  - Integrated in `Game.ts` (architect): `environment.warmUp(camera)` after `renderer.compile`, and the
+    redundant `toneMappingExposure = 0.74` line removed.
+- **Iteration 3 (narrow):** the landing burst hides the skier (`g8`) and the carve spray looks like ground fog
+  in `g6`. Scope: Effects / effectsModel / SnowParticles only.
+- **WP-1 ACCEPTED** after iteration 3 (composites in `scratchpad/sbs3/`). The full report is in
+  `docs/qa/WP-1-acceptance.md`. Checks: Vitest 121/121, `FREESKI_GPU=1` e2e 10/10. Not committed.
+- **WP-2 (skier and animation) dispatched** to `character-animation-engineer`.
+- **WP-2 acceptance tooling:** `scripts/skier-views.mjs` produces 15 close-up poses. The baseline is in
+  `scratchpad/skier-baseline/`.
+- **WP-2 iteration 1 reviewed: a strong improvement, not yet accepted.**
+  - Model: the skier is 5 SkinnedMeshes, 25 bones and 20.8k triangles (it used to be 37 rigid meshes). It has a
+    real jacket, baggy pants, helmet, goggles, boots, bindings, twin-tips with a top sheet, and poles. All 8
+    grabs are distinct. Tests: Vitest 139/139, e2e 10/10.
+  - Integrated in `Game.ts`: the reused `poseInput`, and a lighter skier on the low preset (detail 0.6).
+  - Must-fix (iteration 2, character agent): the tucked thigh in grabs reads as a flat olive slab (`s09`, `s10`).
+  - Then, for the graphics agent: the WP-1 crash cloud hides the crash pose (`s15`).
+- **WP-2 iteration 2 reviewed:** the tucked-thigh slab is fixed. Mute and Japan read as bent legs from behind,
+  and the crossed skis show in Japan. The skier part of WP-2 is OK; WP-2 is formally accepted only after the
+  crash fix.
+- **Checkpoint commit at the user's request.**
+  - All agents and servers were stopped before committing.
+  - The graphics agent's crash-cloud fix was **interrupted mid-work**. Its last note: the crash burst spawns at
+    body height with 3.5 m/s upward speed and a 1.4 s life, and while CRASHED the ski-spray path keeps emitting.
+  - `Effects.ts` / `effectsModel*` may therefore contain a **partial, unreviewed** crash-cloud change.
+    Typecheck, lint, build, Vitest (141/141) and `FREESKI_GPU=1` e2e (10/10) pass on this checkpoint.
+  - **Next step:** resume the crash-cloud fix (graphics agent, narrow scope), review `s15`/`s13`/`g8`, accept
+    WP-2, then WP-5.
+
+---
+
+_The original pause record follows._
+
 _Paused: 2026-11-24 · Reason: laptop under heavy load (user request) · Last commit: `c436677` (on `origin/main`)_
 
 The detailed plan for the remaining work is in

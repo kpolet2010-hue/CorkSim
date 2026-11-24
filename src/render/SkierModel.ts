@@ -1,20 +1,22 @@
-import {
-  BoxGeometry,
-  BufferAttribute,
-  BufferGeometry,
-  CapsuleGeometry,
-  Color,
-  CylinderGeometry,
+﻿import {
+  Bone,
+  DoubleSide,
   Group,
-  Mesh,
+  MeshPhysicalMaterial,
   MeshStandardMaterial,
-  Object3D,
-  SphereGeometry,
-  TorusGeometry,
+  Skeleton,
+  SkinnedMesh,
+  Vector3,
+  type BufferGeometry,
   type Material,
+  type Object3D,
+  type Texture,
 } from 'three';
+import { buildOutfit, type OutfitBones, type OutfitColors } from './skier/outfit';
+import { SkinnedBuilder } from './skier/SkinnedBuilder';
+import { createSkiTopSheet } from './skier/skiTexture';
 
-/** Segment lengths of the rig (metres). */
+/** Segment lengths of the rig (metres). Physics and IK rely on these - keep them stable. */
 export const RIG = {
   thigh: 0.44,
   shin: 0.45,
@@ -23,11 +25,15 @@ export const RIG = {
   /** Ankle height above the ski base. */
   ankle: 0.12,
   hipHalfWidth: 0.1,
+  /** Lateral offset of the upper-arm (shoulder ball) joint from the spine. */
   shoulderHalfWidth: 0.19,
   skiLength: 1.78,
   poleLength: 1.12,
   /** Lateral distance of each foot from the centre line (matches physics ski spacing). */
   stance: 0.13,
+  /** Ski bone offset from the ankle (foot bone), in the foot frame. */
+  skiOffsetY: -0.12,
+  skiOffsetZ: 0.02,
 };
 
 export interface SkierColors {
@@ -37,259 +43,295 @@ export interface SkierColors {
   helmet: number;
   skiTop: number;
   skiAccent: number;
+  /** Optional extended palette (defaults below). */
+  trim?: number;
+  lens?: number;
+  gaiter?: number;
+  gaiterAccent?: number;
+  gloves?: number;
+  boots?: number;
+  bootCuff?: number;
 }
 
 export const DEFAULT_SKIER_COLORS: SkierColors = {
-  jacket: 0xff6a2b,
-  jacketAccent: 0x13c4c4,
-  pants: 0x1d2a3d,
-  helmet: 0xf2f2f2,
-  skiTop: 0x13c4c4,
-  skiAccent: 0xffd34d,
+  jacket: 0xf2762e,
+  jacketAccent: 0x27313d,
+  pants: 0x56603f,
+  helmet: 0xf1f2f0,
+  skiTop: 0x15b8c0,
+  skiAccent: 0xffcf3f,
+  trim: 0xf3ead6,
+  lens: 0xff9a3c,
+  gaiter: 0xb4bcc6,
+  gaiterAccent: 0x5f6b79,
+  gloves: 0x23272d,
+  boots: 0x2b3038,
+  bootCuff: 0x3b424d,
 };
 
-/**
- * Twin-tip ski geometry with sidecut and up-turned tip and tail. Built along +Z, base at y = 0.
- * Colours the top sheet with a two-tone graphic via vertex colours.
- */
-function buildSkiGeometry(length: number, colors: SkierColors): BufferGeometry {
-  const n = 40;
-  const thickness = 0.018;
-  const top = new Color(colors.skiTop);
-  const accent = new Color(colors.skiAccent);
-  const base = new Color(0x141414);
-  const pos: number[] = [];
-  const col: number[] = [];
-  const idx: number[] = [];
-  const half = length / 2;
-  for (let i = 0; i <= n; i++) {
-    const t = i / n; // 0 tail .. 1 tip
-    const z = -half + t * length;
-    const e = Math.abs(t * 2 - 1); // 0 centre .. 1 ends
-    const width = 0.1 + 0.025 * e * e - (e > 0.92 ? (e - 0.92) * 0.6 : 0);
-    const rise = e > 0.82 ? Math.pow((e - 0.82) / 0.18, 2) * 0.075 : 0;
-    const zz = z - Math.sign(z) * rise * 0.25;
-    const w = Math.max(0.03, width) / 2;
-    // top-left, top-right, bottom-left, bottom-right
-    pos.push(w, rise + thickness, zz, -w, rise + thickness, zz, w, rise, zz, -w, rise, zz);
-    const stripe = Math.abs(Math.sin(t * Math.PI * 3.0)) > 0.85 || (t > 0.42 && t < 0.58) ? accent : top;
-    col.push(
-      stripe.r,
-      stripe.g,
-      stripe.b,
-      stripe.r,
-      stripe.g,
-      stripe.b,
-      base.r,
-      base.g,
-      base.b,
-      base.r,
-      base.g,
-      base.b,
-    );
-  }
-  for (let i = 0; i < n; i++) {
-    const a = i * 4;
-    const b = (i + 1) * 4;
-    // top
-    idx.push(a, a + 1, b, b, a + 1, b + 1);
-    // bottom
-    idx.push(a + 2, b + 2, a + 3, a + 3, b + 2, b + 3);
-    // left side (+x)
-    idx.push(a, b, a + 2, a + 2, b, b + 2);
-    // right side (-x)
-    idx.push(a + 1, a + 3, b + 1, b + 1, a + 3, b + 3);
-  }
-  const geo = new BufferGeometry();
-  geo.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
-  geo.setAttribute('color', new BufferAttribute(new Float32Array(col), 3));
-  geo.setIndex(idx);
-  geo.computeVertexNormals();
-  return geo;
+export interface SkierModelStats {
+  meshes: number;
+  bones: number;
+  vertices: number;
+  triangles: number;
 }
 
 /**
- * Procedural, fully rigged skier. The rig is a hierarchy of Object3D joints (bones point down -Y in the
- * rest pose) driven every frame by the SkierAnimator using IK. Meshes are simple primitives with
- * PBR materials - no external assets required.
+ * Procedural, fully rigged freestyle skier. The rig is a hierarchy of `Bone` joints (bones point down -Y
+ * in the rest pose) driven every frame by the SkierAnimator with IK. The outfit (baggy jacket and pants,
+ * helmet, goggles, gaiter, gloves, boots, bindings, twin-tips, poles) is generated procedurally in the
+ * rest pose and smooth-skinned to the joints, merged into one SkinnedMesh per material (5 draw calls).
+ * No external assets are required.
  */
 export class SkierModel {
   /** Placed at the physics foot point with the physics orientation. */
   readonly root = new Group();
-  /** Lean / brake / press pose layer under the root. */
+  /** Pose layer under the root (brake yaw, rail press, ground-gap offset). */
   readonly body = new Group();
-  readonly pelvis = new Object3D();
-  readonly spine = new Object3D();
-  readonly chest = new Object3D();
-  readonly neck = new Object3D();
-  readonly head = new Object3D();
-  readonly shoulders: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly upperArms: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly forearms: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly hands: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly poles: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly hips: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly thighs: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly shins: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly feet: [Object3D, Object3D] = [new Object3D(), new Object3D()];
-  readonly skis: [Object3D, Object3D] = [new Object3D(), new Object3D()];
+  readonly pelvis = new Bone();
+  readonly spine = new Bone();
+  readonly chest = new Bone();
+  readonly neck = new Bone();
+  readonly head = new Bone();
+  /** Clavicles: rotate to shrug / reach. The upper arm hangs off their outer end. */
+  readonly shoulders: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly upperArms: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly forearms: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly hands: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly poles: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly hips: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly thighs: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly shins: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly feet: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly skis: [Bone, Bone] = [new Bone(), new Bone()];
+  readonly skeleton: Skeleton;
+  readonly meshes: SkinnedMesh[] = [];
   private readonly materials: Material[] = [];
   private readonly geometries: BufferGeometry[] = [];
+  private readonly textures: Texture[] = [];
 
-  constructor(colors: SkierColors = DEFAULT_SKIER_COLORS, castShadow = true) {
+  /**
+   * @param castShadow  meshes cast shadows (off on the low preset).
+   * @param detail      geometry density, 1 = full; ~0.6 for a cheap low-preset skier.
+   */
+  constructor(colors: SkierColors = DEFAULT_SKIER_COLORS, castShadow = true, detail = 1) {
     this.root.name = 'skier';
-    const mat = (
-      color: number,
-      roughness = 0.75,
-      metalness = 0,
-      extra: Partial<MeshStandardMaterial> = {},
-    ) => {
-      const m = new MeshStandardMaterial({ color, roughness, metalness });
-      Object.assign(m, extra);
-      this.materials.push(m);
-      return m;
-    };
-    const geo = <T extends BufferGeometry>(g: T): T => {
-      this.geometries.push(g);
-      return g;
-    };
-    const jacket = mat(colors.jacket, 0.8);
-    const accent = mat(colors.jacketAccent, 0.7);
-    const pants = mat(colors.pants, 0.85);
-    const helmet = mat(colors.helmet, 0.35, 0.05);
-    const lens = mat(0xffb347, 0.12, 0.9);
-    const glove = mat(0x1a1a1a, 0.7);
-    const boot = mat(0xe8e8e8, 0.4);
-    const bootAccent = mat(0x222831, 0.5);
-    const skin = mat(0xe0ac8a, 0.6);
-    const metal = mat(0xb9c0c8, 0.3, 0.9);
-    const skiMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.1 });
-    this.materials.push(skiMat);
+    this.body.name = 'skier-body';
+    this.buildRig();
 
-    const add = (parent: Object3D, mesh: Mesh) => {
+    const bones = this.allBones();
+    this.root.updateMatrixWorld(true);
+    this.skeleton = new Skeleton(bones);
+    const index = (b: Bone) => bones.indexOf(b);
+    const pair = (a: [Bone, Bone]): [number, number] => [index(a[0]), index(a[1])];
+    const outfitBones: OutfitBones = {
+      pelvis: index(this.pelvis),
+      spine: index(this.spine),
+      chest: index(this.chest),
+      neck: index(this.neck),
+      head: index(this.head),
+      shoulder: pair(this.shoulders),
+      upperArm: pair(this.upperArms),
+      forearm: pair(this.forearms),
+      hand: pair(this.hands),
+      pole: pair(this.poles),
+      thigh: pair(this.thighs),
+      shin: pair(this.shins),
+      foot: pair(this.feet),
+      ski: pair(this.skis),
+    };
+    const restPositions = bones.map((b) => b.getWorldPosition(new Vector3()));
+
+    const c = { ...DEFAULT_SKIER_COLORS, ...colors };
+    const outfitColors: OutfitColors = {
+      jacket: c.jacket,
+      jacketAccent: c.jacketAccent,
+      trim: c.trim ?? 0xf3ead6,
+      pants: c.pants,
+      helmet: c.helmet,
+      goggleFrame: 0x1b1e23,
+      lens: c.lens ?? 0xff9a3c,
+      gaiter: c.gaiter ?? 0xb4bcc6,
+      gaiterAccent: c.gaiterAccent ?? 0x5f6b79,
+      gloves: c.gloves ?? 0x23272d,
+      boots: c.boots ?? 0x2b3038,
+      bootCuff: c.bootCuff ?? 0x3b424d,
+      binding: 0x2a2d32,
+      bindingAccent: c.skiAccent,
+      skiTop: c.skiTop,
+      skiAccent: c.skiAccent,
+      skiInk: 0x1a2130,
+      skiBase: 0x16181c,
+      skiSide: 0xd9dde2,
+      pole: 0xb9c0c8,
+      skin: 0xd9a07f,
+    };
+
+    const topSheet = createSkiTopSheet({ base: c.skiTop, accent: c.skiAccent, ink: outfitColors.skiInk });
+    if (topSheet) this.textures.push(topSheet);
+    const builders = {
+      fabric: new SkinnedBuilder(),
+      hard: new SkinnedBuilder(),
+      metal: new SkinnedBuilder(),
+      lens: new SkinnedBuilder(),
+      skiTop: new SkinnedBuilder(),
+    };
+    buildOutfit(builders, outfitBones, (b) => restPositions[b], outfitColors, {
+      skiLength: RIG.skiLength,
+      poleLength: RIG.poleLength,
+      texturedTopSheet: topSheet !== null,
+      detail: Math.min(1, Math.max(0.4, detail)),
+    });
+
+    // Materials tuned for the WP-1 lighting (ACES, exposure ~1.3, sky IBL at 0.3).
+    const fabric = new MeshPhysicalMaterial({
+      vertexColors: true,
+      roughness: 0.86,
+      metalness: 0,
+      sheen: 0.35,
+      sheenRoughness: 0.75,
+      sheenColor: 0xffffff,
+      side: DoubleSide,
+    });
+    const hard = new MeshStandardMaterial({ vertexColors: true, roughness: 0.34, metalness: 0.02 });
+    const metal = new MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.9 });
+    const lens = new MeshStandardMaterial({
+      color: outfitColors.lens,
+      roughness: 0.08,
+      metalness: 0.9,
+      emissive: outfitColors.lens,
+      emissiveIntensity: 0.12,
+    });
+    const skiTop = new MeshStandardMaterial({
+      vertexColors: true,
+      map: topSheet,
+      roughness: 0.32,
+      metalness: 0.02,
+    });
+    fabric.name = 'skier-fabric';
+    hard.name = 'skier-hard';
+    metal.name = 'skier-metal';
+    lens.name = 'skier-lens';
+    skiTop.name = 'skier-ski-top';
+
+    const parts: [SkinnedBuilder, Material, string][] = [
+      [builders.fabric, fabric, 'skier-fabric'],
+      [builders.hard, hard, 'skier-hard'],
+      [builders.metal, metal, 'skier-metal'],
+      [builders.lens, lens, 'skier-lens'],
+      [builders.skiTop, skiTop, 'skier-skis'],
+    ];
+    for (const [builder, material, name] of parts) {
+      this.materials.push(material);
+      if (builder.vertexCount === 0) continue;
+      const geometry = builder.build();
+      this.geometries.push(geometry);
+      const mesh = new SkinnedMesh(geometry, material);
+      mesh.name = name;
       mesh.castShadow = castShadow;
       mesh.receiveShadow = false;
-      parent.add(mesh);
-      return mesh;
+      // The skier is always near the camera and its pose moves far from the bind pose.
+      mesh.frustumCulled = false;
+      this.root.add(mesh);
+      mesh.bind(this.skeleton);
+      this.meshes.push(mesh);
+    }
+    this.root.updateMatrixWorld(true);
+  }
+
+  private buildRig(): void {
+    const named = (b: Object3D, name: string) => {
+      b.name = name;
+      return b;
     };
-
     this.root.add(this.body);
-    this.body.add(this.pelvis);
+    this.body.add(named(this.pelvis, 'pelvis'));
     this.pelvis.position.set(0, 0.92, 0);
-
-    // Torso.
-    this.pelvis.add(this.spine);
+    this.pelvis.add(named(this.spine, 'spine'));
     this.spine.position.set(0, 0.04, 0);
-    const hipsMesh = add(this.pelvis, new Mesh(geo(new CapsuleGeometry(0.15, 0.1, 4, 10)), pants));
-    hipsMesh.rotation.z = Math.PI / 2;
-    hipsMesh.scale.set(1, 1, 0.8);
-    this.spine.add(this.chest);
+    this.spine.add(named(this.chest, 'chest'));
     this.chest.position.set(0, 0.24, 0);
-    const torso = add(this.spine, new Mesh(geo(new CapsuleGeometry(0.17, 0.3, 4, 12)), jacket));
-    torso.position.set(0, 0.2, 0);
-    torso.scale.set(1.12, 1, 0.78);
-    const stripe = add(this.spine, new Mesh(geo(new CapsuleGeometry(0.172, 0.05, 4, 12)), accent));
-    stripe.position.set(0, 0.24, 0);
-    stripe.scale.set(1.13, 1, 0.79);
-    const pack = add(this.chest, new Mesh(geo(new BoxGeometry(0.26, 0.32, 0.1)), accent));
-    pack.position.set(0, -0.02, -0.15);
-    const collar = add(this.chest, new Mesh(geo(new CylinderGeometry(0.09, 0.12, 0.1, 10)), jacket));
-    collar.position.set(0, 0.17, 0);
-
-    // Head.
-    this.chest.add(this.neck);
+    this.chest.add(named(this.neck, 'neck'));
     this.neck.position.set(0, 0.2, 0.01);
-    this.neck.add(this.head);
+    this.neck.add(named(this.head, 'head'));
     this.head.position.set(0, 0.12, 0);
-    add(this.head, new Mesh(geo(new SphereGeometry(0.115, 16, 12)), skin)).scale.set(0.95, 1.05, 1);
-    const helm = add(
-      this.head,
-      new Mesh(geo(new SphereGeometry(0.135, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.6)), helmet),
-    );
-    helm.position.set(0, 0.02, -0.005);
-    const goggles = add(this.head, new Mesh(geo(new CapsuleGeometry(0.035, 0.13, 4, 8)), lens));
-    goggles.rotation.z = Math.PI / 2;
-    goggles.position.set(0, 0.03, 0.1);
-    goggles.scale.set(1, 1, 0.6);
-    const strap = add(this.head, new Mesh(geo(new TorusGeometry(0.128, 0.012, 4, 24)), bootAccent));
-    strap.rotation.x = Math.PI / 2;
-    strap.position.y = 0.03;
 
-    // Arms (index 0 = left (+X), 1 = right (-X)).
+    // Arms (index 0 = left (+X), 1 = right (-X)). Clavicle from near the spine to the shoulder ball.
     for (let i = 0; i < 2; i++) {
       const side = i === 0 ? 1 : -1;
-      const sh = this.shoulders[i];
-      sh.position.set(side * RIG.shoulderHalfWidth, 0.14, 0);
+      const tag = i === 0 ? 'L' : 'R';
+      const sh = named(this.shoulders[i], `shoulder${tag}`);
+      sh.position.set(side * 0.045, 0.13, -0.005);
       this.chest.add(sh);
-      sh.add(this.upperArms[i]);
-      const ua = add(
-        this.upperArms[i],
-        new Mesh(geo(new CapsuleGeometry(0.055, RIG.upperArm - 0.06, 4, 8)), jacket),
-      );
-      ua.position.y = -RIG.upperArm / 2;
-      this.upperArms[i].add(this.forearms[i]);
+      sh.add(named(this.upperArms[i], `upperArm${tag}`));
+      this.upperArms[i].position.set(side * (RIG.shoulderHalfWidth - 0.045), 0.01, 0.005);
+      this.upperArms[i].add(named(this.forearms[i], `forearm${tag}`));
       this.forearms[i].position.y = -RIG.upperArm;
-      const fa = add(
-        this.forearms[i],
-        new Mesh(geo(new CapsuleGeometry(0.048, RIG.forearm - 0.06, 4, 8)), jacket),
-      );
-      fa.position.y = -RIG.forearm / 2;
-      const cuff = add(this.forearms[i], new Mesh(geo(new CylinderGeometry(0.052, 0.052, 0.04, 8)), accent));
-      cuff.position.y = -RIG.forearm + 0.04;
-      this.forearms[i].add(this.hands[i]);
+      this.forearms[i].add(named(this.hands[i], `hand${tag}`));
       this.hands[i].position.y = -RIG.forearm;
-      add(this.hands[i], new Mesh(geo(new BoxGeometry(0.08, 0.1, 0.06)), glove)).position.y = -0.04;
-      // Pole: grip at the hand, shaft pointing down -Y.
-      this.hands[i].add(this.poles[i]);
-      this.poles[i].position.set(0, -0.05, 0);
-      const shaft = add(
-        this.poles[i],
-        new Mesh(geo(new CylinderGeometry(0.009, 0.007, RIG.poleLength, 6)), metal),
-      );
-      shaft.position.y = -RIG.poleLength / 2;
-      const grip = add(this.poles[i], new Mesh(geo(new CylinderGeometry(0.018, 0.016, 0.13, 8)), glove));
-      grip.position.y = 0.02;
-      const basket = add(this.poles[i], new Mesh(geo(new CylinderGeometry(0.04, 0.04, 0.008, 10)), glove));
-      basket.position.y = -RIG.poleLength + 0.08;
+      // Pole: grip in the fist, shaft pointing down -Y.
+      this.hands[i].add(named(this.poles[i], `pole${tag}`));
+      this.poles[i].position.set(0, -0.065, 0);
     }
 
     // Legs.
-    const skiGeo = geo(buildSkiGeometry(RIG.skiLength, colors));
     for (let i = 0; i < 2; i++) {
       const side = i === 0 ? 1 : -1;
-      const hip = this.hips[i];
+      const tag = i === 0 ? 'L' : 'R';
+      const hip = named(this.hips[i], `hip${tag}`);
       hip.position.set(side * RIG.hipHalfWidth, -0.05, 0);
       this.pelvis.add(hip);
-      hip.add(this.thighs[i]);
-      const th = add(
-        this.thighs[i],
-        new Mesh(geo(new CapsuleGeometry(0.075, RIG.thigh - 0.08, 4, 10)), pants),
-      );
-      th.position.y = -RIG.thigh / 2;
-      this.thighs[i].add(this.shins[i]);
+      hip.add(named(this.thighs[i], `thigh${tag}`));
+      this.thighs[i].add(named(this.shins[i], `shin${tag}`));
       this.shins[i].position.y = -RIG.thigh;
-      const sn = add(this.shins[i], new Mesh(geo(new CapsuleGeometry(0.062, RIG.shin - 0.1, 4, 10)), pants));
-      sn.position.y = -RIG.shin / 2 + 0.03;
-      this.shins[i].add(this.feet[i]);
+      this.shins[i].add(named(this.feet[i], `foot${tag}`));
       this.feet[i].position.y = -RIG.shin;
-      // Boot (shell + cuff) around the ankle.
-      const shell = add(this.feet[i], new Mesh(geo(new BoxGeometry(0.11, 0.13, 0.3)), boot));
-      shell.position.set(0, -RIG.ankle + 0.07, 0.03);
-      const cuffB = add(this.feet[i], new Mesh(geo(new BoxGeometry(0.115, 0.17, 0.15)), boot));
-      cuffB.position.set(0, 0.04, -0.01);
-      const buckle = add(this.feet[i], new Mesh(geo(new BoxGeometry(0.12, 0.03, 0.16)), bootAccent));
-      buckle.position.set(0, 0.06, 0);
-      // Binding + ski.
-      const binding = add(this.feet[i], new Mesh(geo(new BoxGeometry(0.09, 0.03, 0.4)), bootAccent));
-      binding.position.set(0, -RIG.ankle + 0.03, 0.02);
-      this.feet[i].add(this.skis[i]);
-      this.skis[i].position.set(0, -RIG.ankle, 0.02);
-      add(this.skis[i], new Mesh(skiGeo, skiMat));
+      this.feet[i].add(named(this.skis[i], `ski${tag}`));
+      this.skis[i].position.set(0, RIG.skiOffsetY, RIG.skiOffsetZ);
     }
+  }
+
+  private allBones(): Bone[] {
+    return [
+      this.pelvis,
+      this.spine,
+      this.chest,
+      this.neck,
+      this.head,
+      ...this.shoulders,
+      ...this.upperArms,
+      ...this.forearms,
+      ...this.hands,
+      ...this.poles,
+      ...this.hips,
+      ...this.thighs,
+      ...this.shins,
+      ...this.feet,
+      ...this.skis,
+    ];
+  }
+
+  /** Mesh / skeleton statistics (draw calls = meshes; doubled in the shadow pass when casting). */
+  stats(): SkierModelStats {
+    let vertices = 0;
+    let triangles = 0;
+    for (const m of this.meshes) {
+      vertices += m.geometry.getAttribute('position').count;
+      triangles += (m.geometry.index?.count ?? 0) / 3;
+    }
+    return { meshes: this.meshes.length, bones: this.skeleton.bones.length, vertices, triangles };
+  }
+
+  setCastShadow(cast: boolean): void {
+    for (const m of this.meshes) m.castShadow = cast;
   }
 
   dispose(): void {
     for (const g of this.geometries) g.dispose();
     for (const m of this.materials) m.dispose();
+    for (const t of this.textures) t.dispose();
+    this.skeleton.dispose();
+    for (const m of this.meshes) m.removeFromParent();
+    this.meshes.length = 0;
   }
 }
