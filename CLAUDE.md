@@ -4,6 +4,9 @@ Browser freestyle skiing game: Three.js + TypeScript (strict) + React + Vite + R
 Architecture, physics model, status and known limitations live in [DEVELOPMENT.md](DEVELOPMENT.md) —
 read it before changing a system. `npm run check` must pass; `npm run test:e2e` for browser tests.
 
+**Ongoing work:** a large quality transformation is paused mid-way. Before starting anything, read
+[docs/architecture/QUALITY_TRANSFORMATION.md](docs/architecture/QUALITY_TRANSFORMATION.md) → "RESUME HERE".
+
 Key invariant: `src/sim/` is headless and deterministic (fixed 1/60 s step, no DOM/WebGL/audio/React);
 `src/game/Game.ts` owns presentation. Never commit, push or merge unless asked.
 
