@@ -1,16 +1,20 @@
 // Captures the standard screenshot set used for visual regression checks.
 // Requires a running server (default: production preview on :4173).
 // Usage: node scripts/showcase.mjs <outDir> [baseUrl] [only=name1,name2]
+// FREESKI_GPU=1 renders with the installed Microsoft Edge on the real GPU instead of SwiftShader.
 import { chromium } from '@playwright/test';
 
 const out = process.argv[2] ?? '.';
 const base = process.argv[3] ?? 'http://localhost:4173';
 const only = (process.argv[4] ?? '').split(',').filter(Boolean);
 const want = (n) => only.length === 0 || only.includes(n);
+const gpu = process.env.FREESKI_GPU === '1';
 
-const browser = await chromium.launch({
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-});
+const browser = await chromium.launch(
+  gpu
+    ? { channel: 'msedge', args: ['--ignore-gpu-blocklist'] }
+    : { args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] },
+);
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const logs = [];
 page.on('console', (m) => m.type() === 'error' && logs.push(`error: ${m.text()}`));

@@ -1,6 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const gpuArgs = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+// Default: SwiftShader software WebGL (works on any CI machine). FREESKI_GPU=1 runs the same tests in the
+// installed Microsoft Edge on the real GPU (machines where SwiftShader is too slow for the timing-based checks).
+const realGpu = process.env.FREESKI_GPU === '1';
+const gpuArgs = realGpu
+  ? ['--ignore-gpu-blocklist']
+  : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+const channel = realGpu ? { channel: 'msedge' } : {};
 
 /**
  * Two projects: the production preview build and the Vite dev server. The dev server runs React
@@ -21,6 +27,7 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         baseURL: 'http://localhost:4173',
+        ...channel,
         launchOptions: { args: gpuArgs },
       },
     },
@@ -30,6 +37,7 @@ export default defineConfig({
       use: {
         ...devices['Desktop Chrome'],
         baseURL: 'http://localhost:5173',
+        ...channel,
         launchOptions: { args: gpuArgs },
       },
     },

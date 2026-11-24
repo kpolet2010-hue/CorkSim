@@ -1,42 +1,34 @@
 import {
   ACESFilmicToneMapping,
   type BufferGeometry,
-  Color,
-  DirectionalLight,
-  FogExp2,
-  HemisphereLight,
-  MeshStandardMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
-  PMREMGenerator,
   Quaternion,
   Scene,
   SRGBColorSpace,
   Vector3,
   WebGLRenderer,
-  type Texture,
 } from 'three';
-import { Sky } from 'three/examples/jsm/objects/Sky.js';
+import { buildAudioState } from '../audio/audioInput';
 import { AudioSystem } from '../audio/AudioSystem';
 import { bakeToSingleGeometry, loadOptionalGlb } from '../render/AssetLoader';
-import type { GameSettings, GraphicsQuality } from '../config/settings';
+import type { GameSettings } from '../config/settings';
 import { GameLoop } from '../core/GameLoop';
-import { RAD2DEG } from '../core/math';
 import { InputManager } from '../input/InputManager';
 import type { GameAction } from '../input/actions';
 import type { ParkConfig } from '../park/types';
 import { CameraController } from '../render/CameraController';
-import { createSnowMaterial } from '../render/materials';
+import { buildCameraTarget } from '../render/cameraTarget';
+import { Effects } from '../render/Effects';
+import { Environment } from '../render/Environment';
 import { ParkMeshes } from '../render/ParkMeshes';
-import { SkiTracks } from '../render/SkiTracks';
-import { SkierAnimator, type SkierPoseInput } from '../render/SkierAnimator';
+import { buildSkierPose } from '../render/poseFromSim';
+import { QUALITY, type QualityProfile } from '../render/quality';
+import { SkierAnimator } from '../render/SkierAnimator';
 import { SkierModel } from '../render/SkierModel';
-import { SnowSpray, Snowfall } from '../render/SnowParticles';
-import { buildBackdropMountains, buildTerrainMesh } from '../render/TerrainMesh';
-import { Forest } from '../render/Trees';
-import { createSnowNormalTexture, createSoftDotTexture } from '../render/textures';
 import { Simulation } from '../sim/Simulation';
 import type { SimEvents } from '../sim/events';
+import { liveTrickLabel } from '../tricks/liveTrick';
 
 export interface GameCallbacks {
   onProgress: (progress: number, label: string) => void;
@@ -64,62 +56,6 @@ export interface HudSnapshot {
   hint: string;
 }
 
-interface QualityProfile {
-  shadowMapSize: number;
-  shadows: boolean;
-  pixelRatioCap: number;
-  terrainSpacing: number;
-  featureResolution: number;
-  treeFraction: number;
-  spray: number;
-  snowfall: number;
-  sparkle: boolean;
-  antialias: boolean;
-}
-
-const QUALITY: Record<GraphicsQuality, QualityProfile> = {
-  low: {
-    shadowMapSize: 1024,
-    shadows: false,
-    pixelRatioCap: 1,
-    terrainSpacing: 3,
-    featureResolution: 0.6,
-    treeFraction: 0.45,
-    spray: 600,
-    snowfall: 0,
-    sparkle: false,
-    antialias: false,
-  },
-  medium: {
-    shadowMapSize: 2048,
-    shadows: true,
-    pixelRatioCap: 1.5,
-    terrainSpacing: 2,
-    featureResolution: 0.4,
-    treeFraction: 0.75,
-    spray: 1200,
-    snowfall: 1200,
-    sparkle: true,
-    antialias: true,
-  },
-  high: {
-    shadowMapSize: 4096,
-    shadows: true,
-    pixelRatioCap: 2,
-    terrainSpacing: 1.5,
-    featureResolution: 0.3,
-    treeFraction: 1,
-    spray: 2000,
-    snowfall: 2500,
-    sparkle: true,
-    antialias: true,
-  },
-};
-
-const SUN_DIRECTION = new Vector3(-0.45, 0.62, -0.64).normalize();
-
-const _v = new Vector3();
-const _v2 = new Vector3();
 const _fwd = new Vector3();
 
 /**
@@ -135,14 +71,8 @@ export class Game {
   private skier: SkierModel | null = null;
   private readonly animator = new SkierAnimator();
   private parkMeshes: ParkMeshes | null = null;
-  private forest: Forest | null = null;
-  private spray: SnowSpray | null = null;
-  private snowfall: Snowfall | null = null;
-  private tracks: SkiTracks | null = null;
-  private sun: DirectionalLight | null = null;
-  private envTexture: Texture | null = null;
-  private featureSnow: MeshStandardMaterial | null = null;
-  private readonly disposables: { dispose(): void }[] = [];
+  private environment: Environment | null = null;
+  private effects: Effects | null = null;
   private loop: GameLoop | null = null;
   readonly input: InputManager;
   readonly audio: AudioSystem;
@@ -273,100 +203,24 @@ export class Game {
     this.renderer.domElement.style.height = '100%';
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    const scale = (h * ratio) / 2;
-    this.spray?.setPixelScale(scale);
-    this.snowfall?.setPixelScale(scale);
+    this.effects?.setPixelScale((h * ratio) / 2);
+    this.environment?.resize(w, h, ratio);
   }
 
   private buildEnvironment(treeGeometry: BufferGeometry | null): void {
-    const sim = this.sim!;
-    const q = this.quality;
-    const scene = this.scene;
-    // Sky + image based lighting generated from it.
-    const sky = new Sky();
-    sky.scale.setScalar(10000);
-    const u = sky.material.uniforms;
-    u.turbidity.value = 4;
-    u.rayleigh.value = 1.2;
-    u.mieCoefficient.value = 0.004;
-    u.mieDirectionalG.value = 0.82;
-    u.sunPosition.value.copy(SUN_DIRECTION).multiplyScalar(1000);
-    const pmrem = new PMREMGenerator(this.renderer!);
-    const envScene = new Scene();
-    envScene.add(sky);
-    this.envTexture = pmrem.fromScene(envScene, 0.02).texture;
-    pmrem.dispose();
-    envScene.remove(sky);
-    scene.add(sky);
-    this.disposables.push(sky.geometry, sky.material);
-    scene.environment = this.envTexture;
-    scene.environmentIntensity = 0.55;
-    scene.fog = new FogExp2(new Color(0xc9d9ec), 0.0011);
-    scene.background = null;
-
-    const hemi = new HemisphereLight(0xdbe9ff, 0xf4f6fa, 0.55);
-    scene.add(hemi);
-    const sun = new DirectionalLight(0xfff3e0, 2.6);
-    sun.position.copy(SUN_DIRECTION).multiplyScalar(120);
-    sun.castShadow = q.shadows;
-    sun.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
-    const sc = sun.shadow.camera;
-    sc.left = -45;
-    sc.right = 45;
-    sc.top = 45;
-    sc.bottom = -45;
-    sc.near = 1;
-    sc.far = 400;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.04;
-    scene.add(sun, sun.target);
-    this.sun = sun;
-
-    const normal = createSnowNormalTexture(256);
-    this.disposables.push(normal);
-    const snow = createSnowMaterial(normal, { sparkle: q.sparkle });
-    const featureSnow = createSnowMaterial(normal, {
-      sparkle: q.sparkle,
-      roughness: 0.7,
-      color: 0xffffff,
-      repeat: 0.35,
-    });
-    const backdropMat = new MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
-    this.disposables.push(snow, featureSnow, backdropMat);
-    this.featureSnow = featureSnow;
-    const terrain = buildTerrainMesh(sim.park, snow, {
-      spacing: q.terrainSpacing,
-      chunkSize: 48,
-      receiveShadow: q.shadows,
-    });
-    terrain.traverse((o) => {
-      const g = (o as { geometry?: { dispose(): void } }).geometry;
-      if (g) this.disposables.push(g);
-    });
-    scene.add(terrain);
-    const backdrop = buildBackdropMountains(sim.park, backdropMat);
-    this.disposables.push(backdrop.geometry);
-    scene.add(backdrop);
-
-    const trees = sim.park.trees.filter((_, i) => i % 100 < q.treeFraction * 100);
-    this.forest = new Forest(trees, q.shadows, 150, treeGeometry);
-    scene.add(this.forest.group);
-
-    const dot = createSoftDotTexture();
-    this.disposables.push(dot);
-    this.spray = new SnowSpray(q.spray, dot);
-    scene.add(this.spray.points);
-    if (q.snowfall > 0) {
-      this.snowfall = new Snowfall(q.snowfall, dot);
-      scene.add(this.snowfall.points);
-    }
-    this.tracks = new SkiTracks();
-    scene.add(this.tracks.mesh);
+    this.environment = new Environment(
+      this.renderer!,
+      this.scene,
+      this.sim!.park,
+      this.quality,
+      treeGeometry,
+    );
+    this.effects = new Effects(this.scene, this.quality);
     this.applyResolution();
   }
 
   private buildPark(): void {
-    this.parkMeshes = new ParkMeshes(this.sim!.park, this.featureSnow!, {
+    this.parkMeshes = new ParkMeshes(this.sim!.park, this.environment!.featureSnow, {
       shadows: this.quality.shadows,
       featureResolution: this.quality.featureResolution,
     });
@@ -403,31 +257,18 @@ export class Game {
       sim.events.on('takeoff', (e) => this.audio.playJump(e.pop)),
       sim.events.on('landed', (e) => {
         this.audio.playLanding(e.result.impactSpeed, e.result.quality);
-        const b = sim.player.body;
-        for (let i = 0; i < 2; i++)
-          this.spray?.emit(
-            b.skis[i].point,
-            _v.copy(b.velocity).multiplyScalar(0.3),
-            20 + Math.round(e.result.impactSpeed * 4),
-            3,
-            2.5,
-            1.4,
-          );
+        this.effects?.onLanded(sim, e.result.impactSpeed);
         this.cameraCtl?.addShake(Math.min(0.6, e.result.impactSpeed / 20));
       }),
       sim.events.on('crash', () => {
         this.audio.playCrash();
-        this.spray?.emit(
-          sim.player.body.position,
-          _v.copy(sim.player.body.velocity).multiplyScalar(0.4),
-          120,
-          4,
-          3,
-          1.8,
-        );
+        this.effects?.onCrash(sim);
         this.cameraCtl?.addShake(0.8);
       }),
-      sim.events.on('railStart', (e) => this.audio.playRailStart(e.kind)),
+      sim.events.on('railStart', (e) => {
+        this.audio.playRailStart(e.kind);
+        this.effects?.onRailStart(sim);
+      }),
       sim.events.on('trickLanded', (e) => {
         if (e.scored.landing !== 'crash') this.audio.playTrickLanded(e.scored.points);
       }),
@@ -462,9 +303,9 @@ export class Game {
       this.skier.root.position.copy(this.currPos);
       this.skier.root.quaternion.copy(this.currQuat);
     }
-    this.tracks?.clear();
+    this.effects?.clear();
     if (this.cameraCtl) this.cameraCtl.snap(this.cameraTarget());
-    if (this.forest) this.forest.update(this.camera.position, 0, true);
+    this.environment?.update(this.currPos, this.camera, 0, true);
   }
 
   start(): void {
@@ -505,64 +346,34 @@ export class Game {
 
   private cameraTarget() {
     const p = this.sim!.player;
-    const b = p.body;
-    return {
-      position: this.skier ? this.skier.root.position : b.position,
-      velocity: b.velocity,
-      heading: b.heading,
-      airborne: p.state === 'AIRBORNE',
-      grinding: p.state === 'RAIL_GRINDING',
-      crashed: p.state === 'CRASHED',
-      landingPoint: p.impact.valid ? p.impact.point : null,
-    };
+    return buildCameraTarget(p, this.skier ? this.skier.root.position : p.body.position);
   }
 
   private renderFrame(alpha: number, frameDt: number): void {
     if (!this.renderer || !this.sim || !this.skier || !this.cameraCtl) return;
     const sim = this.sim;
-    const player = sim.player;
-    const body = player.body;
     const dt = Math.min(frameDt, 0.1);
     this.renderTime += dt;
 
     // Interpolated skier transform.
     this.skier.root.position.lerpVectors(this.prevPos, this.currPos, alpha);
     this.skier.root.quaternion.slerpQuaternions(this.prevQuat, this.currQuat, alpha);
-    const grab = player.grabs.poseDefinition;
-    const g = player.rails.grind;
-    const pose: SkierPoseInput = {
-      state: player.state,
-      edgeAngle: body.edgeAngle,
-      brake: body.brakeAmount,
-      speed: body.speed,
-      tucking: body.tucking,
-      charge: player.charge,
-      landingCompression: player.landingCompression,
-      groundGap: body.groundGap,
-      grab: player.grabs.current ?? (player.grabs.blend > 0 ? grab : null),
-      grabBlend: player.grabs.blend,
-      railStance: g?.stance ?? null,
-      railBalance: g?.balance ?? 0,
-      railPress: g?.press ?? 'none',
-      spinRate: body.angularVelocity.length(),
-      time: this.renderTime,
-    };
-    if (!this.paused) this.animator.update(this.skier, pose, dt);
-
     if (!this.paused) {
+      this.animator.update(this.skier, buildSkierPose(sim.player, this.renderTime), dt);
       this.cameraCtl.update(this.cameraTarget(), dt);
-      this.updateEffects(dt);
+      this.effects?.update(sim, this.camera.position, dt);
+      this.camera.getWorldDirection(_fwd);
+      this.audio.update(
+        buildAudioState(sim.player),
+        this.camera.position,
+        _fwd,
+        sim.player.body.position,
+        dt,
+      );
     }
 
-    // Shadow frustum follows the skier.
-    if (this.sun) {
-      const c = this.skier.root.position;
-      this.sun.target.position.copy(c);
-      this.sun.position.copy(c).addScaledVector(SUN_DIRECTION, 150);
-      this.sun.target.updateMatrixWorld();
-    }
-    this.forest?.update(this.camera.position, dt);
-    this.renderer.render(this.scene, this.camera);
+    this.environment?.update(this.skier.root.position, this.camera, dt);
+    this.environment?.render(this.camera);
 
     this.hudTimer -= frameDt;
     if (this.hudTimer <= 0) {
@@ -571,92 +382,11 @@ export class Game {
     }
   }
 
-  private updateEffects(dt: number): void {
-    const sim = this.sim!;
-    const player = sim.player;
-    const b = player.body;
-    const grounded = player.fsm.onGround;
-    // Snow spray from skidding/carving skis.
-    if (grounded && this.spray) {
-      const carveSpray = Math.abs(b.edgeAngle) * b.speed * 0.25;
-      const skid = b.skidSpeed * 1.2 + b.brakeAmount * b.speed * 0.6;
-      const intensity = carveSpray + skid;
-      if (intensity > 1.2) {
-        const count = Math.min(6, Math.floor(intensity * dt * 22) + (Math.random() < 0.5 ? 1 : 0));
-        _v2.set(1, 0, 0).applyQuaternion(b.orientation);
-        for (let i = 0; i < 2; i++) {
-          const ski = b.skis[i];
-          if (!ski.inContact) continue;
-          const side = Math.sign(b.edgeAngle) || 1;
-          _v.copy(b.velocity)
-            .multiplyScalar(0.35)
-            .addScaledVector(_v2, -side * Math.min(4, intensity * 0.4));
-          this.spray.emit(ski.point, _v, count, 1.6, 1.5);
-        }
-      }
-    }
-    this.spray?.update(dt);
-    this.snowfall?.update(this.camera.position, dt);
-    // Ski tracks.
-    if (this.tracks) {
-      _v2.set(1, 0, 0).applyQuaternion(b.orientation);
-      for (let i = 0; i < 2; i++) {
-        const ski = b.skis[i];
-        this.tracks.add(i as 0 | 1, ski.point, _v2, grounded && ski.inContact && b.speed > 0.5);
-      }
-    }
-    // Audio.
-    this.camera.getWorldDirection(_fwd);
-    this.audio.update(
-      {
-        speed: b.speed,
-        grounded,
-        airborne: player.state === 'AIRBORNE',
-        grinding: player.state === 'RAIL_GRINDING',
-        railKind: player.rails.grind?.rail.kind ?? null,
-        carve: Math.abs(b.edgeAngle) / 1.1,
-        skid: b.skidSpeed,
-        brake: b.brakeAmount,
-        crashed: player.state === 'CRASHED',
-      },
-      this.camera.position,
-      _fwd,
-      b.position,
-      dt,
-    );
-  }
-
   private buildHud(): HudSnapshot {
     const sim = this.sim!;
     const p = sim.player;
     const combo = sim.scoring.combo;
-    let live = '';
-    if (p.state === 'AIRBORNE' && p.rotation.active) {
-      const spin = Math.abs(p.rotation.spin * RAD2DEG);
-      const total = p.rotation.total * RAD2DEG;
-      const parts: string[] = [];
-      if (p.rotation.inversions > 0 && spin > 120)
-        parts.push(`${p.rotation.inversions > 1 ? 'Double ' : ''}Cork ${Math.round(total / 10) * 10}°`);
-      else if (p.rotation.inversions > 0) parts.push(`${p.rotation.inversions > 1 ? 'Double ' : ''}Flip`);
-      else if (spin > 90) parts.push(`${Math.round(spin / 10) * 10}°`);
-      const cur = p.grabs.current;
-      if (cur) parts.push(cur.name);
-      for (const gr of p.grabs.completed) if (!cur || gr.id !== cur.id) parts.push(gr.name);
-      live = parts.join(' · ');
-    } else if (p.state === 'RAIL_GRINDING' && p.rails.grind) {
-      const gr = p.rails.grind;
-      live =
-        gr.press === 'nose'
-          ? 'Nose Slide'
-          : gr.press === 'tail'
-            ? 'Tail Slide'
-            : gr.stance === 'slide'
-              ? 'Boardslide'
-              : gr.stance === 'switchFifty'
-                ? 'Switch 50-50'
-                : '50-50';
-      if (gr.entrySpinDeg > 0) live = `${gr.entrySpinDeg} On ${live}`;
-    }
+    const live = liveTrickLabel(p);
     let hint = '';
     if (p.state === 'IDLE' && sim.runTime < 6) hint = 'Hold W to push off · A/D to carve · SPACE to jump';
     else if (p.stillTime > 4) hint = 'Hold W to push · R to restart · Backspace to reset';
@@ -719,11 +449,7 @@ export class Game {
       // Resolution-related quality can change live; geometry density applies on the next run.
       const q = QUALITY[s.graphics];
       this.quality = { ...this.quality, pixelRatioCap: q.pixelRatioCap, shadowMapSize: q.shadowMapSize };
-      if (this.sun && this.renderer?.shadowMap.enabled) {
-        this.sun.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
-        this.sun.shadow.map?.dispose();
-        this.sun.shadow.map = null;
-      }
+      this.environment?.setShadowMapSize(q.shadowMapSize);
     }
     this.applyResolution();
   }
@@ -767,22 +493,12 @@ export class Game {
     this.audio.dispose();
     this.parkMeshes?.dispose();
     this.parkMeshes = null;
-    this.forest?.dispose();
-    this.forest = null;
-    this.spray?.dispose();
-    this.spray = null;
-    this.snowfall?.dispose();
-    this.snowfall = null;
-    this.tracks?.dispose();
-    this.tracks = null;
+    this.effects?.dispose();
+    this.effects = null;
+    this.environment?.dispose();
+    this.environment = null;
     this.skier?.dispose();
     this.skier = null;
-    for (const d of this.disposables) d.dispose();
-    this.disposables.length = 0;
-    this.envTexture?.dispose();
-    this.envTexture = null;
-    this.sun?.shadow.map?.dispose();
-    this.sun = null;
     this.scene.clear();
     this.sim?.dispose();
     this.sim = null;
