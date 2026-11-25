@@ -146,6 +146,10 @@ class Pose {
 }
 
 const SIDE = [1, -1] as const;
+/** Visual carve lean per radian of edge angle (small: a relaxed park skier, not a racing carve). */
+const LEAN_GAIN = 0.36;
+/** Soft cap of the visual carve lean (rad), approached smoothly via tanh. */
+const LEAN_CAP = 0.3;
 const LEG = RIG.thigh + RIG.shin;
 const ARM = RIG.upperArm + RIG.forearm;
 /** Distance from the wrist joint to the palm centre of the glove. */
@@ -431,31 +435,38 @@ export class SkierAnimator {
     const absEdge = Math.abs(edge);
     const turn = absEdge > 0.01 ? Math.sign(edge) : this.lastTurn;
 
-    // Athletic stance, deeper with speed and edge angle; subtle terrain chatter at speed.
-    let crouch = 0.3 + 0.12 * speedK + absEdge * 0.3;
-    const chatter = (wobble(t * 9, 1) * 0.6 + wobble(t * 17, 2) * 0.4) * 0.03 * speedK;
+    // Relaxed freestyle stance: soft knees, fairly tall, only a little deeper with speed and edge
+    // angle; subtle terrain chatter at speed.
+    let crouch = 0.22 + 0.06 * speedK + absEdge * 0.1;
+    const chatter = (wobble(t * 9, 1) * 0.6 + wobble(t * 17, 2) * 0.4) * 0.025 * speedK;
     crouch += chatter;
 
-    // Carve: whole body leans into the turn from the feet, upper body angulates back towards vertical.
-    const lean = edge * 0.85;
+    // Carve: a modest lean into the turn from the feet (soft-capped, smooth through zero so switching
+    // turn direction never pops); the upper body angulates back to near vertical, keeping only a slight
+    // lean and a slight turn of the chest and head into the turn.
+    const lean = LEAN_CAP * Math.tanh((edge * LEAN_GAIN) / LEAN_CAP);
     P.s.lean = lean;
-    P.s.spineRoll = lean * 0.42;
-    P.s.neckRoll = lean * 0.3;
-    P.s.neckYaw = edge * 0.35;
-    P.s.spineYaw = edge * 0.12;
+    P.s.spineRoll = lean * 0.3;
+    P.s.neckRoll = lean * 0.25;
+    P.s.neckYaw = lean * 0.6;
+    P.s.spineYaw = lean * 0.35;
     // Weight on the outside ski: pelvis shifts a touch over it.
     P.s.pelvisX = -p.loadBias * 0.03;
 
-    // Carving hands: inside hand low and forward, outside hand out for balance.
+    // Hands hang loosely low beside the hips (poles trailing back), with a small natural swing; when
+    // carving, the inside hand drops a touch lower and forward, the outside hand drifts slightly out.
     const wc = this.wCarve;
     for (let i = 0; i < 2; i++) {
       const sd = SIDE[i];
       const inside = sd === turn ? 1 : 0;
       const h = P.hand[i];
-      const poleSwing = Math.sin(t * 2.2 + i * Math.PI) * 0.03 * speedK * (1 - wc);
-      h.set(sd * 0.28, -0.3, 0.34 + poleSwing);
-      if (inside) h.lerp(_v.set(sd * 0.33, -0.48, 0.36), wc);
-      else h.lerp(_v.set(sd * 0.45, -0.2, 0.18), wc);
+      const ph = t * 2.2 + i * Math.PI;
+      const swing = Math.sin(ph) * (0.025 + 0.02 * speedK) * (1 - 0.5 * wc);
+      h.set(sd * 0.29, -0.39 + Math.cos(ph) * 0.01, 0.13 + swing);
+      if (inside) h.lerp(_v.set(sd * 0.28, -0.41, 0.2 + swing * 0.5), wc);
+      else h.lerp(_v.set(sd * 0.35, -0.36, 0.1 + swing * 0.5), wc);
+      // Poles trail down and back, swinging a little with the hands.
+      P.pole[i].set(sd * (0.1 + 0.04 * wc * (1 - inside)), -0.55, -0.83 - swing * 0.6).normalize();
     }
 
     // Idle: relaxed, breathing, weight shifts, poles planted beside the skis, looking around.

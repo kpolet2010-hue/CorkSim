@@ -56,6 +56,44 @@ describe('SkierAnimator', () => {
     model.dispose();
   });
 
+  it('carves with a relaxed, near-upright upper body and a soft-capped lean, continuous across turns', () => {
+    const { model, anim, p } = setup(new Vector3(), 0);
+    p.state = 'CARVING';
+    p.speed = 16;
+    const up = new Vector3();
+    const q = new Quaternion();
+    const pelvis = new Vector3();
+    const chestRoll = (): number => {
+      model.chest.getWorldQuaternion(q);
+      up.set(0, 1, 0).applyQuaternion(q);
+      return Math.atan2(up.x, up.y);
+    };
+    for (const edge of [1.08, -1.08]) {
+      p.edgeAngle = edge;
+      run(model, anim, p, 1.5);
+      expect(anim.footError).toBeLessThan(0.01);
+      // Upper body close to vertical (slight lean into the turn only).
+      expect(Math.abs(chestRoll())).toBeLessThan(0.12);
+      // Whole-body lean soft-capped around 0.3 rad: pelvis offset from the centre line stays small.
+      model.pelvis.getWorldPosition(pelvis);
+      expect(Math.abs(pelvis.x)).toBeLessThan(Math.sin(0.32) * pelvis.y + 0.04);
+      expect(Math.sign(pelvis.x)).toBe(Math.sign(edge));
+    }
+    // Switching the turn direction sweeps the pelvis smoothly (no per-frame jump).
+    const prev = new Vector3();
+    model.pelvis.getWorldPosition(prev);
+    let maxStep = 0;
+    for (let i = 0; i < 60; i++) {
+      p.edgeAngle = 1.08 * Math.cos((i / 59) * Math.PI) * -1;
+      run(model, anim, p, 1 / 60);
+      model.pelvis.getWorldPosition(pelvis);
+      maxStep = Math.max(maxStep, pelvis.distanceTo(prev));
+      prev.copy(pelvis);
+    }
+    expect(maxStep).toBeLessThan(0.02);
+    model.dispose();
+  });
+
   it.each([
     ['plain', 0, 1.5],
     ['spinning into the landing', 5, 0.3],
