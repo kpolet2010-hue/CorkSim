@@ -348,9 +348,9 @@ export class Game {
     this.copySimTransform(this.currPos, this.currQuat);
   }
 
-  private cameraTarget() {
+  private cameraTarget(alpha = 1) {
     const p = this.sim!.player;
-    return buildCameraTarget(p, this.skier ? this.skier.root.position : p.body.position);
+    return buildCameraTarget(p, this.skier ? this.skier.root.position : p.body.position, alpha);
   }
 
   private renderFrame(alpha: number, frameDt: number): void {
@@ -365,7 +365,7 @@ export class Game {
     if (!this.paused) {
       // The fixed-step alpha also interpolates the crash ragdoll segments (WP-2C).
       this.animator.update(this.skier, buildSkierPose(sim.player, this.renderTime, this.poseInput, alpha), dt);
-      this.cameraCtl.update(this.cameraTarget(), dt);
+      this.cameraCtl.update(this.cameraTarget(alpha), dt);
       this.effects?.update(sim, this.camera.position, dt);
       this.camera.getWorldDirection(_fwd);
       this.audio.update(

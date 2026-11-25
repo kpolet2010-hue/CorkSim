@@ -124,8 +124,18 @@
      - Recover only once the body is slow, not by the 5.5 s cap while still sliding.
      - Show the last ragdoll step at the recover step.
   3. Render: an arm sweeps overhead in the forward-fall get-up.
-  4. Optional: pass `alpha` to `buildCameraTarget` in `Game.cameraTarget()`.
+  4. Done (23:45): `Game.cameraTarget(alpha)` passes the alpha.
   5. Record the final set (12 scenarios plus close-ups).
+- Point 1 resolved (23:47, side views from the frozen game, `scratchpad/inspect/backward-2s-*.png`). The
+  backward-fall end pose is plausible: on the back, knees bent, skis flat on the snow. The "legs straight up"
+  look from behind was foreshortening. Remaining nit: the arms lie stretched out to the sides, a bit stiff.
+- Point 5 done (23:46): the final like-for-like recordings of the new build, with no page errors, are in
+  `scratchpad/crash-new` (12 scenarios) and `scratchpad/crash-new-close` (g1, g2, b1, b2). Compare them with
+  `crash-old` / `crash-old-close`.
+  - Every Big Air crash ends at the 5.5 s cap, with the body still sliding. This confirms physics follow-up
+    point 2: recover only once the body is slow.
+- **Session ended at the user's request at 00:00.** No agents or servers running. Next session: points 2, 3
+  and 5, then show the user the old/new comparison.
 - **WP-2 is still open** until the user reviews the recordings. Do not start WP-5.
 - Kept for later comparisons: the worktrees `baseline-wt` (`5d74a98`) and `old-crash-wt` in the scratchpad.
 - Documented for WP-3: the XL kicker air camera falls far behind. Trees can block the crash camera (it has
