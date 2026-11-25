@@ -12,10 +12,13 @@ import {
 const VERT = /* glsl */ `
 attribute float aSize;
 attribute float aAlpha;
+attribute float aShade;
 varying float vAlpha;
+varying float vShade;
 uniform float uScale;
 void main() {
   vAlpha = aAlpha;
+  vShade = aShade;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   gl_PointSize = aSize * uScale / max(0.1, -mv.z);
   gl_Position = projectionMatrix * mv;
@@ -28,11 +31,14 @@ uniform sampler2D uMap;
 uniform vec3 uLit;
 uniform vec3 uShade;
 varying float vAlpha;
+varying float vShade;
 void main() {
   vec4 t = texture2D(uMap, gl_PointCoord);
   // Sun-lit top, cool sky-lit underside: a puff separates from the snow behind it by its shading, like real
-  // spray, instead of being white on white. (gl_PointCoord.y grows downwards.)
-  vec3 c = mix(uLit, uShade, smoothstep(0.2, 0.95, gl_PointCoord.y));
+  // spray, instead of being white on white. (gl_PointCoord.y grows downwards.) vShade raises the terminator
+  // for dense snow (impact skirts, chunks) whose self-shadowed side is larger, and whose lower half is often
+  // hidden in the snow surface.
+  vec3 c = mix(uLit, uShade, smoothstep(0.2 - vShade * 0.55, 0.95 - vShade * 0.4, gl_PointCoord.y));
   gl_FragColor = vec4(c, t.a * vAlpha);
   if (gl_FragColor.a < 0.01) discard;
   #include <tonemapping_fragment>
@@ -51,7 +57,20 @@ export interface EmitOptions {
   alpha?: number;
   /** Random start position jitter (m). */
   jitter?: number;
+  /** Downward acceleration (m/s^2). Default 4: loose powder hangs in the air; dense chunks use ~9.81. */
+  gravity?: number;
+  /** Air drag rate (1/s). Default 2.2; dense chunks keep their throw with a lower value. */
+  drag?: number;
+  /** Size growth (m/s) as the puff disperses. Default 0.12 x sizeScale; chunks do not grow. */
+  growth?: number;
+  /** Self-shadowing 0..1 (default 0): dense snow shows more of its cool sky-lit side. */
+  shade?: number;
 }
+
+const DEFAULT_GRAVITY = 4;
+const DEFAULT_DRAG = 2.2;
+/** The default as stored in the Float32Array, so the common case reuses one exp() per frame. */
+const DEFAULT_DRAG_F32 = Math.fround(DEFAULT_DRAG);
 
 /**
  * Pooled snow spray particles (carving, braking, landings, crashes, box slides). Fixed-size typed arrays, no
@@ -67,6 +86,11 @@ export class SnowSpray {
   private readonly alpha: Float32Array;
   private readonly peak: Float32Array;
   private readonly growth: Float32Array;
+  private readonly gravity: Float32Array;
+  private readonly drag: Float32Array;
+  private readonly shade: Float32Array;
+  /** Shade only changes on emit, so it is uploaded only then. */
+  private shadeDirty = false;
   private next = 0;
   private live = 0;
   private readonly material: ShaderMaterial;
@@ -83,10 +107,14 @@ export class SnowSpray {
     this.alpha = new Float32Array(capacity);
     this.peak = new Float32Array(capacity);
     this.growth = new Float32Array(capacity);
+    this.gravity = new Float32Array(capacity);
+    this.drag = new Float32Array(capacity);
+    this.shade = new Float32Array(capacity);
     const geo = new BufferGeometry();
     geo.setAttribute('position', new BufferAttribute(this.pos, 3));
     geo.setAttribute('aSize', new BufferAttribute(this.size, 1));
     geo.setAttribute('aAlpha', new BufferAttribute(this.alpha, 1));
+    geo.setAttribute('aShade', new BufferAttribute(this.shade, 1));
     this.material = new ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -120,6 +148,11 @@ export class SnowSpray {
     const sizeScale = o.sizeScale ?? 1;
     const lifeScale = o.life ?? 1;
     const alpha = o.alpha ?? 0.85;
+    const gravity = o.gravity ?? DEFAULT_GRAVITY;
+    const drag = o.drag ?? DEFAULT_DRAG;
+    const growth = o.growth ?? 0.12 * sizeScale;
+    const shade = Math.min(1, Math.max(0, o.shade ?? 0));
+    if (n > 0) this.shadeDirty = true;
     for (let c = 0; c < n; c++) {
       const i = this.next;
       this.next = (this.next + 1) % this.capacity;
@@ -132,7 +165,10 @@ export class SnowSpray {
       this.vel[k + 2] = baseVelocity.z + (Math.random() - 0.5) * o.spread;
       this.maxLife[i] = this.life[i] = (0.6 + Math.random() * 0.6) * lifeScale;
       this.size[i] = (0.14 + Math.random() * 0.24) * sizeScale;
-      this.growth[i] = 0.12 * sizeScale;
+      this.growth[i] = growth;
+      this.gravity[i] = gravity;
+      this.drag[i] = drag;
+      this.shade[i] = shade;
       this.peak[i] = alpha * (0.75 + Math.random() * 0.25);
     }
   }
@@ -145,7 +181,7 @@ export class SnowSpray {
   }
 
   update(dt: number): void {
-    const drag = Math.exp(-2.2 * dt);
+    const defaultDrag = Math.exp(-DEFAULT_DRAG * dt);
     let live = 0;
     for (let i = 0; i < this.capacity; i++) {
       if (this.life[i] <= 0) {
@@ -155,8 +191,10 @@ export class SnowSpray {
       live++;
       this.life[i] -= dt;
       const k = i * 3;
+      const dk = this.drag[i];
+      const drag = dk === DEFAULT_DRAG_F32 ? defaultDrag : Math.exp(-dk * dt);
       this.vel[k] *= drag;
-      this.vel[k + 1] = this.vel[k + 1] * drag - 4 * dt;
+      this.vel[k + 1] = this.vel[k + 1] * drag - this.gravity[i] * dt;
       this.vel[k + 2] *= drag;
       this.pos[k] += this.vel[k] * dt;
       this.pos[k + 1] += this.vel[k + 1] * dt;
@@ -171,6 +209,10 @@ export class SnowSpray {
     g.getAttribute('position').needsUpdate = true;
     g.getAttribute('aAlpha').needsUpdate = true;
     g.getAttribute('aSize').needsUpdate = true;
+    if (this.shadeDirty) {
+      g.getAttribute('aShade').needsUpdate = true;
+      this.shadeDirty = false;
+    }
   }
 
   dispose(): void {
@@ -344,6 +386,7 @@ export class Snowfall {
     geo.setAttribute('position', new BufferAttribute(this.pos, 3));
     geo.setAttribute('aSize', new BufferAttribute(size, 1));
     geo.setAttribute('aAlpha', new BufferAttribute(alpha, 1));
+    geo.setAttribute('aShade', new BufferAttribute(new Float32Array(count), 1));
     this.material = new ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,

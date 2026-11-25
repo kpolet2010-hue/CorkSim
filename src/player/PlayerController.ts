@@ -1,5 +1,5 @@
-import { Vector3 } from 'three';
-import type { GameplayConfig } from '../config/physicsConfig';
+import { Quaternion, Vector3 } from 'three';
+import type { FallKind, GameplayConfig } from '../config/physicsConfig';
 import type { EventBus } from '../core/EventBus';
 import { RAD2DEG, clamp, isFiniteQuaternion, isFiniteVector, quaternionFromForwardUp } from '../core/math';
 import type { ControlInput } from '../input/actions';
@@ -16,6 +16,8 @@ import {
   type AirControl,
 } from '../physics/AirPhysics';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
+import { SEG, type RagdollView } from '../physics/Ragdoll';
+import { BODY } from './bodyDimensions';
 import { applyPop, stepGround, type GroundControl } from '../physics/SkiPhysics';
 import { RailSystem, formatRailTrickName, railSignature, type RailTrick } from '../rails/RailSystem';
 import { scoreAirTrick, scoreRailTrick, type ScoringSystem } from '../scoring/ScoringSystem';
@@ -34,10 +36,61 @@ export interface TakeoffInfo {
   position: Vector3;
 }
 
+/** Cause of a crash fall: which way the skier loses balance. */
+export interface CrashFall {
+  kind: FallKind;
+  /** Side falls: +1 = towards the skier's left (+X), -1 = right. */
+  side: 1 | -1;
+  /** Scale of the loss-of-balance trip (default 1). */
+  tripScale?: number;
+  /** Start the ragdoll from the pre-step position (the crash was detected by an overlap this step). */
+  rewind?: boolean;
+}
+
 const _sample = createSurfaceSample();
 const _tmp = new Vector3();
 const _tmp2 = new Vector3();
+const _crashRoot = new Vector3();
+const _crashTrip = new Vector3();
+const _fallUp = new Vector3();
+const _fallTravel = new Vector3();
+const _fallLeft = new Vector3();
 const _grabButtons = new Set<GrabButton>();
+
+/**
+ * Fall direction of a crash at touchdown, from how the body meets the snow: leaning back relative to the
+ * travel direction (back-seated) falls backward, leaning forward / head first falls forward, a lateral
+ * tilt or skis sideways to the travel falls to the side. A hard but upright impact sits the skier back.
+ */
+export function fallFromTouchdown(
+  orientation: Quaternion,
+  normal: Vector3,
+  velocity: Vector3,
+  tripScale = 1,
+): CrashFall {
+  const up = _fallUp.set(0, 1, 0).applyQuaternion(orientation);
+  up.addScaledVector(normal, -up.dot(normal)); // tilt of the body in the slope plane
+  const travel = _fallTravel.copy(velocity).addScaledVector(normal, -velocity.dot(normal));
+  const left = _fallLeft.set(1, 0, 0).applyQuaternion(orientation);
+  left.addScaledVector(normal, -left.dot(normal));
+  if (left.lengthSq() > 1e-9) left.normalize();
+  if (travel.lengthSq() < 4) {
+    travel.set(0, 0, 1).applyQuaternion(orientation);
+    travel.addScaledVector(normal, -travel.dot(normal));
+  }
+  if (travel.lengthSq() > 1e-9) travel.normalize();
+  const tilt = up.length();
+  const pitch = up.dot(travel);
+  const lateral = up.dot(left);
+  if (tilt < 0.42) {
+    // Nearly upright: skis sideways to the travel catch an edge (fall towards the travel), else sit back.
+    const across = travel.dot(left);
+    if (Math.abs(across) > 0.6) return { kind: 'side', side: across >= 0 ? 1 : -1, tripScale };
+    return { kind: 'backward', side: 1, tripScale };
+  }
+  if (Math.abs(lateral) > Math.abs(pitch)) return { kind: 'side', side: lateral >= 0 ? 1 : -1, tripScale };
+  return { kind: pitch > 0 ? 'forward' : 'backward', side: 1, tripScale };
+}
 
 /**
  * High level skier controller. Owns the state machine and dispatches each fixed step to the subsystem
@@ -65,6 +118,8 @@ export class PlayerController {
   lastAirTrick: AirTrick | null = null;
   crashTimer = 0;
   crashReason = '';
+  /** Fall direction of the current / last crash. */
+  lastFall: { kind: FallKind; side: 1 | -1 } = { kind: 'forward', side: 1 };
   assistActive = false;
   switchStance = false;
   private previousFootY = 0;
@@ -99,7 +154,7 @@ export class PlayerController {
     const heading = _tmp.set(Math.sin(headingDeg / RAD2DEG), 0, Math.cos(headingDeg / RAD2DEG));
     this.body.reset(spawn, heading, _sample.normal);
     quaternionFromForwardUp(this.body.heading, _sample.normal, this.body.orientation);
-    this.physics.endTumble();
+    this.physics.endRagdoll();
     this.grabs.reset();
     this.rotation.end();
     this.rails.reset(this.park.config.seed);
@@ -352,7 +407,12 @@ export class PlayerController {
           },
           airTime: this.rotation.airTime,
         });
-        this.crash('Head first', impact);
+        this.park.surface.sample(b.position.x, b.position.z, _sample);
+        this.crash(
+          'Head first',
+          impact,
+          fallFromTouchdown(b.orientation, _sample.normal, b.velocity, this.cfg.crash.landingTripScale),
+        );
         return;
       }
     }
@@ -382,7 +442,11 @@ export class PlayerController {
 
     if (result.quality === 'crash') {
       this.pendingRail = null;
-      this.crash(result.reason || 'Crash', result.impactSpeed);
+      this.crash(
+        result.reason || 'Crash',
+        result.impactSpeed,
+        fallFromTouchdown(b.orientation, _sample.normal, b.velocity, this.cfg.crash.landingTripScale),
+      );
       return;
     }
 
@@ -505,16 +569,17 @@ export class PlayerController {
       const railId = rail?.id ?? '';
       const g = this.rails.grind;
       // Fall off to the side the balance tipped towards.
+      const fallSide: 1 | -1 = g && g.balance > 0 ? -1 : 1;
       if (g) {
         _tmp
           .set(1, 0, 0)
           .applyQuaternion(this.body.orientation)
-          .multiplyScalar(-Math.sign(g.balance) * 2);
+          .multiplyScalar(fallSide * 2);
         this.body.velocity.add(_tmp);
       }
       this.rails.end();
       this.events.emit('railEnd', { railId, bailed: true });
-      this.crash('Lost balance', 0);
+      this.crash('Lost balance', 0, { kind: 'side', side: fallSide });
       return;
     }
     if (result === 'exit' || input.pressed.jump) {
@@ -539,56 +604,161 @@ export class PlayerController {
     const hit = this.physics.checkObstacleHit(this.body.position, this.body.orientation);
     if (!hit) return false;
     if (this.body.speed < 2.5 && hit !== 'tree') return false;
-    this.crash(hit === 'tree' ? 'Hit a tree' : 'Hit an obstacle', this.body.speed);
+    // The skis/body stop at the obstacle while the torso carries on. The overlap began during this step,
+    // so the ragdoll starts from the pre-step position (no depenetration pop out of the obstacle).
+    this.crash(hit === 'tree' ? 'Hit a tree' : 'Hit an obstacle', this.body.speed, {
+      kind: 'forward',
+      side: 1,
+      rewind: true,
+    });
     return true;
   }
 
-  crash(reason: string, impactSpeed: number): void {
+  /** The crash ragdoll (read-only) while CRASHED, otherwise null. */
+  get ragdoll(): RagdollView | null {
+    return this.physics.ragdoll.active ? this.physics.ragdoll.view : null;
+  }
+
+  /**
+   * Starts a crash: the skier becomes an articulated ragdoll that keeps its exact rigid motion
+   * (v + ω × r per segment) plus a momentum-conserving loss-of-balance trip in the direction of `fall`.
+   * Without `fall`, the skier falls forward.
+   */
+  crash(reason: string, impactSpeed: number, fall?: CrashFall): void {
     if (!this.fsm.transition('CRASHED')) return;
     this.crashReason = reason;
     this.crashTimer = 0;
+    this.crashCalmTime = 0;
+    this.crashCalmW = Infinity;
+    this.crashSettledAt = -1;
     this.grabs.releaseAll();
     this.grabs.reset();
     this.rotation.end();
     this.pendingRail = null;
     this.scoring.breakCombo();
     const b = this.body;
-    // Lose some energy on impact before the tumble.
-    b.velocity.multiplyScalar(0.75);
-    this.physics.startTumble(
-      b.position,
-      b.orientation,
-      b.velocity,
-      b.angularVelocity,
-      this.park.surface.height(b.position.x, b.position.z),
-    );
+    const c = this.cfg.crash;
+    const kind: FallKind = fall?.kind ?? 'forward';
+    const side = fall?.side ?? 1;
+    this.lastFall = { kind, side };
+
+    const root = _crashRoot.copy(b.position);
+    if (fall?.rewind) root.addScaledVector(b.velocity, -this.cfg.fixedTimestep);
+    // Trip direction (legs relative to the torso), tangent to the snow under the skier.
+    this.park.surface.sample(root.x, root.z, _sample);
+    const n = _sample.normal;
+    const travel = _tmp.copy(b.velocity).addScaledVector(n, -b.velocity.dot(n));
+    if (travel.lengthSq() < 1) {
+      // Slow: the skis' facing defines "forward".
+      travel.set(0, 0, 1).applyQuaternion(b.orientation);
+      travel.addScaledVector(n, -travel.dot(n));
+    }
+    if (travel.lengthSq() < 1e-6) travel.copy(b.heading);
+    travel.normalize();
+    const dir = _crashTrip;
+    if (kind === 'backward') dir.copy(travel);
+    else if (kind === 'forward') dir.copy(travel).negate();
+    else {
+      // The skis slip out opposite to the side the body falls to.
+      dir.set(1, 0, 0).applyQuaternion(b.orientation);
+      dir.addScaledVector(n, -dir.dot(n));
+      if (dir.lengthSq() < 1e-6) dir.crossVectors(n, travel);
+      dir.normalize().multiplyScalar(-side);
+    }
+    const scale = fall?.tripScale ?? 1;
+    this.physics.startRagdoll(c, this.cfg.physics.mass, {
+      rootPosition: root,
+      rootOrientation: b.orientation,
+      velocity: b.velocity,
+      angularVelocity: b.angularVelocity,
+      tripDirection: dir,
+      tripSpeed: c.tripSpeed[kind] * scale,
+    });
+    this.syncBodyFromRagdoll();
     this.events.emit('crash', { reason, impactSpeed });
+  }
+
+  /**
+   * Debug/test hook: makes the skier lose balance and fall from a ground state (there is no gameplay
+   * trigger for ground falls yet). `side` (+1 = the skier's left, -1 = right) applies to side falls.
+   * Returns false if the skier is not on the ground.
+   */
+  debugFall(kind: FallKind, side: 1 | -1 = 1): boolean {
+    if (!this.fsm.onGround) return false;
+    this.crash('Lost balance', 0, { kind, side });
+    return this.fsm.state === 'CRASHED';
+  }
+
+  /** Time the ragdoll has been calm (below the settle thresholds), and when it settled (-1 = not yet). */
+  private crashCalmTime = 0;
+  /** Low-passed largest segment angular speed (ignores single-step contact flicker). */
+  private crashCalmW = Infinity;
+  private crashSettledAt = -1;
+
+  /** True once the ragdoll has come to rest (the skier lies still before getting up). */
+  get crashSettled(): boolean {
+    return this.fsm.state === 'CRASHED' && this.crashSettledAt >= 0;
+  }
+
+  /**
+   * While CRASHED the body mirrors the pelvis: the model root is pelvis × inverse(pelvis rest offset), and
+   * velocity / angular velocity are the pelvis's, so camera, effects and audio keep working.
+   */
+  private syncBodyFromRagdoll(): void {
+    const pelvis = this.physics.ragdoll.view.segments[SEG.pelvis];
+    const b = this.body;
+    b.orientation.copy(pelvis.quaternion);
+    b.position.set(0, -BODY.pelvisHeight, 0).applyQuaternion(pelvis.quaternion).add(pelvis.position);
+    b.velocity.copy(pelvis.velocity);
+    b.angularVelocity.copy(pelvis.angularVelocity);
+    b.grounded = false;
   }
 
   private stepCrashed(dt: number): void {
     this.crashTimer += dt;
-    const b = this.body;
-    this.physics.stepTumble(b.position, b.orientation, b.velocity, b.angularVelocity);
-    // Safety net: if the body ever slips through the snow mesh, recover immediately.
-    if (b.position.y < this.park.surface.height(b.position.x, b.position.z) - 1.2) {
+    const c = this.cfg.crash;
+    const ok = this.physics.stepRagdoll(dt);
+    if (!ok) {
       this.recover();
       return;
     }
-    const settled = this.crashTimer > this.cfg.crash.recoverTime && b.speed < 2.5;
-    if (settled || this.crashTimer > this.cfg.crash.maxTumbleTime || !isFiniteVector(b.position)) {
+    this.syncBodyFromRagdoll();
+    const ragdoll = this.physics.ragdoll;
+    const pelvis = ragdoll.view.segments[SEG.pelvis];
+    // Safety net: if the body ever slips through the snow mesh, recover immediately.
+    if (
+      pelvis.position.y <
+      this.park.surface.height(pelvis.position.x, pelvis.position.z) - c.fallThroughDepth
+    ) {
+      this.recover();
+      return;
+    }
+    // Settled: pelvis slow and every segment calm for a while, after a minimum crash time.
+    const w = ragdoll.maxAngularSpeed();
+    this.crashCalmW = Number.isFinite(this.crashCalmW)
+      ? this.crashCalmW + (w - this.crashCalmW) * Math.min(1, dt / Math.max(dt, c.settleFilterTime))
+      : w;
+    const calm = pelvis.velocity.length() < c.settleSpeed && this.crashCalmW < c.settleAngularSpeed;
+    this.crashCalmTime = calm ? this.crashCalmTime + dt : 0;
+    if (this.crashSettledAt < 0 && this.crashTimer >= c.minCrashTime && this.crashCalmTime >= c.settleTime)
+      this.crashSettledAt = this.crashTimer;
+    const lieDone = this.crashSettledAt >= 0 && this.crashTimer - this.crashSettledAt >= c.lieTime;
+    if (lieDone || this.crashTimer > c.maxTumbleTime || !isFiniteVector(this.body.position)) {
       this.recover();
     }
   }
 
-  /** Stands the skier back up where the tumble ended, facing down the fall line. */
+  /** Stands the skier back up where the ragdoll's pelvis came to rest, facing down the fall line. */
   recover(): void {
     const b = this.body;
     const half = this.park.config.terrain.halfWidth;
-    const pos = _tmp2.copy(isFiniteVector(b.position) ? b.position : this.park.spawnPosition(new Vector3()));
+    const rd = this.physics.ragdoll;
+    const from = rd.active ? rd.view.segments[SEG.pelvis].position : b.position;
+    const pos = _tmp2.copy(isFiniteVector(from) ? from : this.park.spawnPosition(new Vector3()));
     pos.x = clamp(pos.x, -half + 3, half - 3);
     // Avoid recovering on top of a feature or rail: step down the hill until clear.
     for (let i = 0; i < 40 && this.park.surface.featureOffset(pos.x, pos.z) > 0.05; i++) pos.z += 1.5;
-    this.physics.endTumble();
+    this.physics.endRagdoll();
     const yawDeg = 0;
     this.reset(pos.clone(), yawDeg);
     this.events.emit('recovered', {});
@@ -620,7 +790,7 @@ export class PlayerController {
       !isFiniteQuaternion(b.orientation) ||
       !isFiniteVector(b.angularVelocity)
     ) {
-      this.physics.endTumble();
+      this.physics.endRagdoll();
       this.reset();
       return;
     }

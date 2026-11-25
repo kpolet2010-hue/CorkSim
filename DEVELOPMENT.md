@@ -144,11 +144,62 @@ kinks and at speed) and is countered with A/D; losing it bails. Exits fly off th
 with Space; air rotation before locking scores "N On", after leaving "N Out". Rail-to-rail transfers bank
 the first grind when the next one locks.
 
+### Crash ragdoll (physics/Ragdoll.ts)
+
+A crash turns the skier into an articulated ragdoll of 11 Rapier bodies (spec and audit:
+`docs/architecture/CRASH_REDESIGN.md`). There is no animation layer: the body movement comes from physics.
+
+- **Segments:** pelvis and chest (flat round cuboids, a back and hips to slide on), head (ball), upper arms,
+  forearms (hand + pole rigid), thighs (capsules) and shins (capsule plus a rigid boot + ski cuboid
+  1.78 × 0.1 × 0.03 m). Masses for 75 kg (scaled to `physics.mass`): 11 / 22 / 5.5 / 2.2 / 1.8 / 9 / 6.5 kg.
+  Each segment's frame is the rest frame of the bone(s) it drives (identity in the rest pose, +Y up, +Z
+  forward, +X left) with its origin at the bone joint; the offsets come from `player/bodyDimensions.ts`,
+  which a test checks against `RIG` and `SkierModel.buildRig`. The foot/ski frame is Rx(−bootLean) in the
+  shin (fixed boot forward lean, 0.3 rad), so the ski is flat when the shin leans forward by that angle.
+- **Joints:** knees (0–150°) and elbows (0–145°) are revolute with Rapier limits (rapier3d-compat 0.19
+  ignores `JointData.limits` for revolute joints: they are set with `setLimits` after creation).
+  Hips, shoulders, waist and neck are spherical joints whose per-axis angular limits are set through the
+  joint set (`ImpulseJointSet.raw.jointSetLimits`, the JS wrapper has no `setLimits` for spherical
+  joints). Rapier limits each imaginary component of the relative quaternion (a box); a box whose corner
+  reaches |imag| = 1 lets the rotation reach w = 0, where the double cover flips the sign and the limit
+  explodes, so every solver-limited range keeps Σ sin²(limit/2) < 0.85 (tested). That rules out an
+  overhead arm reach. Our own soft limit (swing ellipse + twist, velocity level) remains as a
+  configurable fallback (`crash.solverLimits`): explicit limit torques were measured to be too weak under
+  gravity, unstable when stiffened, and fidgety against contacts. Skier parts never collide with each
+  other. Hard and soft CCD are off on the ragdoll (both destabilise the jointed chain); the snow trimesh
+  uses `FIX_INTERNAL_EDGES` so skis and limbs do not catch on interior triangle edges.
+- **Muscle tone and damping:** a weak spring-damper towards a protective pose (arms forward/out, chin
+  tucked, slight hip and knee bend) decays from 1 to 0.08 with τ = 0.6 s; joint damping 2.5 /s. Ball joints
+  get explicit torque impulse pairs before each `world.step()`, hinges an acceleration-based motor.
+- **Crash entry:** every segment gets the skier's rigid motion `v + ω × r` (r from the foot point, the
+  pivot of the air rotation), so momentum is preserved exactly (no damping, no extra spin). The loss of
+  balance is a momentum-conserving trip impulse pair (legs vs chest, head and arms; pelvis = pivot) of
+  2.8 m/s relative, spread over 0.12 s: backward = skis shoot forward (relative to the travel), forward =
+  skis catch, side = skis slip out opposite to the fall side. Landing crashes derive the kind from the
+  touchdown (`fallFromTouchdown`: tilt in the slope plane against the travel, skis sideways, hard upright
+  impact = backward) with the trip scaled by 0.6; obstacles fall forward (spawned from the pre-step position
+  so the ragdoll does not start inside the obstacle); rail bails fall to the side the balance tipped to.
+  The athletic stance is built from the RIG lengths and lifted only by its actual snow penetration (+1 cm).
+- **Snow:** clothing friction 0.45, skis 0.2, helmet 0.5 (snow 0.35, averaged), restitution 0.05, linear /
+  angular damping 0.05 / 0.8. Segments within 5 cm of the analytic snow get a ploughing drag on their
+  tangential velocity (0.6 /s) and extra angular damping (5 /s, rolling resistance).
+- **Rest and recovery:** settled = pelvis slower than 0.8 m/s and the low-passed (0.15 s) largest segment
+  angular speed below 1.5 rad/s for 0.4 s, after at least 1.2 s; the skier lies for 0.6 s and recovers at
+  the pelvis (stepping off features as before). Hard cap 5.5 s, fall-through guard (pelvis 1.2 m under the
+  snow), NaN guard.
+- **Contract:** `player.ragdoll: RagdollView | null` (segments with world position/quaternion, the state
+  before the last step, velocities, snow contact; static layout `info`; `bootLean`; `time`). While CRASHED
+  `body.position/orientation` = pelvis × inverse(pelvis rest offset) and `body.velocity/angularVelocity` are
+  the pelvis's. `player.debugFall(kind, side)` starts a ground fall (scripts, tests);
+  `player.crashSettled` and `player.lastFall` describe the crash.
+
 ### Rapier
 
 Rapier (`@dimforge/rapier3d-compat`, the WASM-embedded build of `@dimforge/rapier3d`) owns the solid
 world: tree trunks, rail/box supports and box bodies (crash obstacles, queried with the skier's body
-capsule each step), plus a triangle mesh of the snow used for the physically simulated crash tumble.
+capsule each step), plus a triangle mesh of the snow used for the crash ragdoll. Rapier 0.19 scene
+queries use the broad-phase BVH, which only a world step builds, so `PhysicsWorld` steps the (still
+body-less) world once after loading; before that fix, obstacles were invisible until the first crash.
 
 **Trade-off:** normal ski contact uses the analytic `SurfaceField` instead of Rapier ray casts against a
 triangle mesh. The analytic surface gives exact, smooth normals (no facet jitter at speed), is allocation
@@ -198,8 +249,8 @@ the procedural version (tested).
 ## Robustness
 
 NaN/Infinity guards on every step (reset if ever detected), angular velocity clamps, quaternion
-re-normalisation, speed limit, out-of-bounds respawn, head-first detection, crash tumble fall-through
-guard, automatic recovery after crashes, Backspace reset, stuck hint. The loop clamps long frames,
+re-normalisation, speed limit, out-of-bounds respawn, head-first detection, crash ragdoll fall-through
+guard, ragdoll NaN guard and hard cap, automatic recovery after crashes, Backspace reset, stuck hint. The loop clamps long frames,
 resynchronises after tab switches and auto-pauses on visibility loss. Keyboard listeners are registered
 once (centrally), bound keys only suppress browser shortcuts while the game is active and focus is not in a
 form field, and held keys are released on blur. All geometries, materials, textures, listeners, the

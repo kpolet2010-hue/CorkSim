@@ -87,20 +87,121 @@ export function grindRate(kind: 'rail' | 'box', speed: number, out: GrindParams)
 }
 
 /**
- * Crash impact: like the landing burst, a low skirt thrown sideways and back at snow level (never a cloud
- * over the tumbling body), scaled by the skier's speed at the crash.
+ * Crash impact skirt: a low ring of snow at snow level around the contact point (never a cloud over the
+ * tumbling body), scaled by the skier's speed at the crash. `throwSpeed` is the radial ring speed; the
+ * forward share of the momentum is added separately (see crashCarry).
  */
 export function crashBurst(speed: number, out: BurstParams): BurstParams {
   const v = Math.max(0, speed);
-  out.count = Math.round(Math.min(160, 40 + v * 5));
-  out.throwSpeed = 2 + Math.min(4, v * 0.2);
-  out.spread = 1.5 + Math.min(2.5, v * 0.12);
-  out.upward = 0.6 + Math.min(0.8, v * 0.04);
-  out.sizeScale = 1.4 + Math.min(0.6, v * 0.03);
+  out.count = Math.round(Math.min(160, 50 + v * 5));
+  out.throwSpeed = 2.2 + Math.min(3.5, v * 0.18);
+  out.spread = 1.2 + Math.min(2, v * 0.1);
+  out.upward = 0.5 + Math.min(0.6, v * 0.03);
+  out.sizeScale = 1.5 + Math.min(0.6, v * 0.03);
   return out;
 }
 
-/** Trailing puffs per second while the crashed body slides (a thin plume, not a wall). */
-export function crashTrailRate(speed: number): number {
+/**
+ * Forward speed (m/s) the impact snow keeps from the body's momentum: it is shoved ahead, not left behind,
+ * but stays well below the body's speed so the plume falls back and never travels with the tumbling skier.
+ */
+export function crashCarry(speed: number): number {
+  return Math.min(2.5, Math.max(0, speed) * 0.12);
+}
+
+/** Gravity for the crash skirt (m/s^2): wet, compacted impact snow settles faster than carve powder (4). */
+export const SKIRT_GRAVITY = 5.5;
+
+export interface ChunkParams {
+  count: number;
+  /** Horizontal throw speed (m/s). */
+  throwSpeed: number;
+  /** Upward throw speed (m/s); chunks are dense and fall at full gravity. */
+  upward: number;
+  /** Sprite size scale: small, so flecks never hide the body. */
+  sizeScale: number;
+}
+
+/** Gravity used for the dense crash chunks (m/s^2). */
+export const CHUNK_GRAVITY = 9.81;
+
+/** Thrown snow chunks and flecks at a crash: few, small, ballistic, scaled by speed and bounded. */
+export function crashChunks(speed: number, out: ChunkParams): ChunkParams {
+  const v = Math.max(0, speed);
+  out.count = Math.round(Math.min(48, 18 + v * 2));
+  out.throwSpeed = 1.5 + Math.min(3.5, v * 0.2);
+  out.upward = 1.8 + Math.min(1.6, v * 0.08);
+  out.sizeScale = 0.34;
+  return out;
+}
+
+/** A crashed body farther than this (m) above the snow is airborne between bounces: nothing is ploughed. */
+export const CRASH_CONTACT_CLEARANCE = 0.5;
+
+/** Trailing puffs per second while the crashed body slides on the snow (a thin plume, not a wall). */
+export function crashTrailRate(speed: number, clearance = 0): number {
+  if (clearance > CRASH_CONTACT_CLEARANCE) return 0;
   return speed < 1.5 ? 0 : Math.min(24, speed * 1.6);
+}
+
+export interface Vec3Like {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Turns a horizontal throw into one along the snow surface (unit `normal`), keeping its speed. Snow thrown
+ * across a steep landing must follow the slope down; a horizontal throw would leave it hovering metres above
+ * the snow as the hill drops away beneath it.
+ */
+export function alongSurface(v: Vec3Like, normal: Vec3Like): Vec3Like {
+  const speed = Math.hypot(v.x, v.y, v.z);
+  const d = v.x * normal.x + v.y * normal.y + v.z * normal.z;
+  v.x -= normal.x * d;
+  v.y -= normal.y * d;
+  v.z -= normal.z * d;
+  const l = Math.hypot(v.x, v.y, v.z);
+  if (l > 1e-6) {
+    const k = speed / l;
+    v.x *= k;
+    v.y *= k;
+    v.z *= k;
+  }
+  return v;
+}
+
+export interface HeightSampler {
+  height(x: number, z: number): number;
+}
+
+/** Sample points along the body's up axis (m from the feet): skis, hips, head. */
+const BODY_REACH = [0, 0.75, 1.5] as const;
+
+/**
+ * Where a crashed body touches the snow: the lowest of feet, hips and head relative to the surface. Writes
+ * that point, dropped onto the snow, to `out` and returns its clearance above the snow (m, may be negative).
+ * A head-first crash therefore marks the snow at the head, not under the skis in the air.
+ */
+export function crashContact(
+  foot: Vec3Like,
+  up: Vec3Like,
+  surface: HeightSampler,
+  out: Vec3Like,
+): number {
+  let best = Infinity;
+  for (let i = 0; i < BODY_REACH.length; i++) {
+    const r = BODY_REACH[i];
+    const x = foot.x + up.x * r;
+    const y = foot.y + up.y * r;
+    const z = foot.z + up.z * r;
+    const h = surface.height(x, z);
+    if (y - h < best) {
+      best = y - h;
+      out.x = x;
+      out.y = h;
+      out.z = z;
+    }
+  }
+  return best;
 }

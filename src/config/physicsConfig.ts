@@ -149,11 +149,147 @@ export interface RailConfig {
   relockCooldown: number;
 }
 
+/**
+ * Range of a ball joint (hip, shoulder, waist, neck) for the LEFT side: per-axis angle limits of the
+ * child's rotation relative to its parent, in the parent frame (rad), enforced by the Rapier solver on
+ * each quaternion component (exact for single-axis rotations). About X: + bends a downward bone backwards /
+ * an upward bone forwards. About Z: + moves a downward bone towards +X (left). Twist is about the bone
+ * axis (Y). The right side mirrors Z and twist.
+ */
+export interface RagdollJointRange {
+  swingXMin: number;
+  swingXMax: number;
+  swingZMin: number;
+  swingZMax: number;
+  twistMin: number;
+  twistMax: number;
+}
+
+/** A relative rotation (rotation vector, parent frame, rad) for the LEFT side; right mirrors y and z. */
+export interface RagdollRotation {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export type RagdollSegmentKind = 'pelvis' | 'chest' | 'head' | 'upperArm' | 'forearm' | 'thigh' | 'shin';
+
+export type FallKind = 'backward' | 'side' | 'forward';
+
 export interface CrashConfig {
-  /** Seconds before the skier recovers after a crash. */
-  recoverTime: number;
-  /** Max seconds to wait for the tumbling body to settle. */
+  /** Minimum crash time before the body may count as settled (s). */
+  minCrashTime: number;
+  /** The body must stay below the settle thresholds this long (s). */
+  settleTime: number;
+  /** Time the skier lies still after settling before getting up (s). */
+  lieTime: number;
+  /** Hard cap on the crash duration (s). */
   maxTumbleTime: number;
+  /** Pelvis speed below which the body counts as settling (m/s). */
+  settleSpeed: number;
+  /** Every segment's angular speed must be below this to settle (rad/s). */
+  settleAngularSpeed: number;
+  /** Time constant of the low-pass on the largest segment angular speed for settling (s). */
+  settleFilterTime: number;
+  /** Pelvis this far below the analytic snow = fell through the trimesh, recover at once (m). */
+  fallThroughDepth: number;
+  /** Relative leg-vs-torso speed of the loss-of-balance trip impulse pair (m/s). */
+  tripSpeed: Record<FallKind, number>;
+  /** Time over which the trip impulse pair is applied (s); 0 = instantly at the crash. */
+  tripDuration: number;
+  /** Trip scale for landing crashes (the touchdown itself already unbalances the body). */
+  landingTripScale: number;
+  /** Segment masses for a 75 kg skier (kg); scaled to `physics.mass`. Shin includes boot and ski. */
+  segmentMass: Record<RagdollSegmentKind, number>;
+  /** Long-axis inertia of the limb capsules as a fraction of their transverse inertia (stability). */
+  limbAxialInertia: number;
+  /** Part of the shin mass carried by the boot+ski cuboid (0..1). */
+  skiMassFraction: number;
+  /** Friction coefficients (Rapier averages them with the snow's 0.35). */
+  frictionClothing: number;
+  frictionSki: number;
+  frictionHelmet: number;
+  restitution: number;
+  /** Per-segment Rapier damping (1/s): air drag and flailing losses. */
+  linearDamping: number;
+  angularDamping: number;
+  /** Snow ploughing: tangential velocity drag of segments touching the snow (1/s). */
+  ploughDrag: number;
+  /** Extra angular damping of segments touching the snow (rolling resistance, 1/s). */
+  contactAngularDamping: number;
+  /** Probe gap below which a segment counts as touching the snow (m). */
+  contactMargin: number;
+  /**
+   * Which ball joints use Rapier solver limits (per-axis, stiff, but only well-conditioned for moderate
+   * ranges: the solver uses a small-angle Jacobian) instead of our own soft limit (swing ellipse + twist,
+   * velocity-level, robust for wide ranges but softer under sustained load).
+   */
+  solverLimits: { waist: boolean; neck: boolean; shoulder: boolean; hip: boolean };
+  /** Soft limits: fraction of the limit error corrected per step (0..1). */
+  limitErp: number;
+  /**
+   * Soft limits: gain of the error-correction (bias) term. The joint pair's own pivot inertia underestimates
+   * the coupled chain's, so a gain > 1 is needed to hold against gravity.
+   */
+  softLimitStrength: number;
+  /** Soft limits: fraction of the outward relative velocity removed per step (above 1 overshoots: jitter). */
+  softLimitVelocityGain: number;
+  /**
+   * Soft limits: cap of the error-correction speed (rad/s). A limit held open by a contact (e.g. a flat ski
+   * twisting the leg) then only pushes gently instead of rocking the body while it lies still.
+   */
+  softLimitMaxBias: number;
+  /** Passive joint damping on the relative angular velocity (1/s). */
+  jointDamping: number;
+  /** Per-step cap of the relative angular velocity change from our joint torques (rad/s). */
+  maxJointDeltaOmega: number;
+  /** Muscle tone: natural frequency at full tone (rad/s). */
+  toneFrequency: number;
+  toneDampingRatio: number;
+  /** Tone level at the crash (1) decaying with `toneDecayTime` towards `toneLimp`. */
+  toneStart: number;
+  toneLimp: number;
+  toneDecayTime: number;
+  /** Knee and elbow ranges (rad, 0 = straight). */
+  kneeMax: number;
+  elbowMax: number;
+  waist: RagdollJointRange;
+  neck: RagdollJointRange;
+  shoulder: RagdollJointRange;
+  hip: RagdollJointRange;
+  /** Protective pose the tone pulls towards (arms out, chin tucked, knees bending). */
+  tonePose: {
+    waist: RagdollRotation;
+    neck: RagdollRotation;
+    shoulder: RagdollRotation;
+    hip: RagdollRotation;
+    knee: number;
+    elbow: number;
+  };
+  /**
+   * Fixed forward lean of the rigid boot (rad): the foot/ski frame is Rx(-bootLean) in the shin frame, so
+   * the ski lies flat when the shin leans forward by this angle.
+   */
+  bootLean: number;
+  /** Athletic stance at the crash entry, in the skier's frame (rotation vectors, left side). */
+  stance: {
+    pelvis: RagdollRotation;
+    chest: RagdollRotation;
+    head: RagdollRotation;
+    upperArm: RagdollRotation;
+    /** Elbow bend (rad). */
+    elbow: number;
+    /** Thigh; the knee bends so that the shin leans forward by `bootLean` (flat skis). */
+    thigh: RagdollRotation;
+  };
+  /**
+   * Soft-CCD (speculative contact) prediction distance of every segment (m). 0 = off: hard CCD launches the
+   * jointed chain and soft CCD makes limbs pressed against obstacles jitter; impacts then penetrate the snow
+   * by up to v·dt for one step before the contact resolves it.
+   */
+  softCcdDistance: number;
+  /** Extra Rapier solver iterations for the ragdoll bodies (joint stiffness). */
+  solverIterations: number;
 }
 
 export interface GameplayConfig {
@@ -165,6 +301,8 @@ export interface GameplayConfig {
   crash: CrashConfig;
   fixedTimestep: number;
 }
+
+const DEG = Math.PI / 180;
 
 export const DEFAULT_GAMEPLAY_CONFIG: GameplayConfig = {
   fixedTimestep: 1 / 60,
@@ -253,8 +391,104 @@ export const DEFAULT_GAMEPLAY_CONFIG: GameplayConfig = {
     relockCooldown: 0.45,
   },
   crash: {
-    recoverTime: 2.2,
-    maxTumbleTime: 4,
+    minCrashTime: 1.2,
+    settleTime: 0.4,
+    lieTime: 0.6,
+    maxTumbleTime: 5.5,
+    settleSpeed: 0.8,
+    settleAngularSpeed: 1.5,
+    settleFilterTime: 0.15,
+    fallThroughDepth: 1.2,
+    tripSpeed: { backward: 2.8, side: 2.8, forward: 2.8 },
+    tripDuration: 0.12,
+    landingTripScale: 0.6,
+    segmentMass: {
+      pelvis: 11,
+      chest: 22,
+      head: 5.5,
+      upperArm: 2.2,
+      forearm: 1.8,
+      thigh: 9,
+      shin: 6.5,
+    },
+    skiMassFraction: 0.45,
+    limbAxialInertia: 0.3,
+    frictionClothing: 0.45,
+    frictionSki: 0.2,
+    frictionHelmet: 0.5,
+    restitution: 0.05,
+    linearDamping: 0.05,
+    angularDamping: 0.8,
+    ploughDrag: 0.6,
+    contactAngularDamping: 5,
+    contactMargin: 0.05,
+    solverLimits: { waist: true, neck: true, shoulder: true, hip: true },
+    limitErp: 0.25,
+    softLimitStrength: 2,
+    softLimitVelocityGain: 1,
+    softLimitMaxBias: 5,
+    jointDamping: 2.5,
+    maxJointDeltaOmega: 25,
+    toneFrequency: 8,
+    toneDampingRatio: 0.9,
+    toneStart: 1,
+    toneLimp: 0.08,
+    toneDecayTime: 0.6,
+    kneeMax: 150 * DEG,
+    elbowMax: 145 * DEG,
+    waist: {
+      swingXMin: -25 * DEG,
+      swingXMax: 70 * DEG,
+      swingZMin: -35 * DEG,
+      swingZMax: 35 * DEG,
+      twistMin: -35 * DEG,
+      twistMax: 35 * DEG,
+    },
+    neck: {
+      swingXMin: -45 * DEG,
+      swingXMax: 60 * DEG,
+      swingZMin: -40 * DEG,
+      swingZMax: 40 * DEG,
+      twistMin: -70 * DEG,
+      twistMax: 70 * DEG,
+    },
+    // Solver-limited: the box must keep |imag| of its corner below ~0.9, so no overhead reach.
+    shoulder: {
+      swingXMin: -85 * DEG,
+      swingXMax: 35 * DEG,
+      swingZMin: -25 * DEG,
+      swingZMax: 65 * DEG,
+      twistMin: -25 * DEG,
+      twistMax: 25 * DEG,
+    },
+    // Solver-limited: keep the quaternion box corner below |imag| ~0.9 (see solverLimits).
+    hip: {
+      swingXMin: -100 * DEG,
+      swingXMax: 25 * DEG,
+      swingZMin: -20 * DEG,
+      swingZMax: 45 * DEG,
+      twistMin: -35 * DEG,
+      twistMax: 35 * DEG,
+    },
+    tonePose: {
+      waist: { x: 0.12, y: 0, z: 0 },
+      neck: { x: 0.45, y: 0, z: 0 },
+      shoulder: { x: -0.6, y: 0, z: 0.7 },
+      hip: { x: -0.35, y: 0, z: 0.12 },
+      knee: 1.0,
+      elbow: 0.9,
+    },
+    bootLean: 0.3,
+    stance: {
+      pelvis: { x: 0.1, y: 0, z: 0 },
+      chest: { x: 0.35, y: 0, z: 0 },
+      head: { x: 0.05, y: 0, z: 0 },
+      upperArm: { x: -0.45, y: 0, z: 0.3 },
+      elbow: 0.8,
+      thigh: { x: -0.55, y: 0, z: 0.03 },
+    },
+    solverIterations: 6,
+    softCcdDistance: 0,
   },
 };
 
@@ -267,6 +501,36 @@ export function cloneGameplayConfig(base: GameplayConfig = DEFAULT_GAMEPLAY_CONF
     air: { ...base.air },
     landing: { ...base.landing },
     rail: { ...base.rail },
-    crash: { ...base.crash },
+    crash: cloneCrashConfig(base.crash),
+  };
+}
+
+function cloneCrashConfig(c: CrashConfig): CrashConfig {
+  const tp = c.tonePose;
+  const st = c.stance;
+  return {
+    ...c,
+    tripSpeed: { ...c.tripSpeed },
+    solverLimits: { ...c.solverLimits },
+    segmentMass: { ...c.segmentMass },
+    waist: { ...c.waist },
+    neck: { ...c.neck },
+    shoulder: { ...c.shoulder },
+    hip: { ...c.hip },
+    tonePose: {
+      ...tp,
+      waist: { ...tp.waist },
+      neck: { ...tp.neck },
+      shoulder: { ...tp.shoulder },
+      hip: { ...tp.hip },
+    },
+    stance: {
+      pelvis: { ...st.pelvis },
+      chest: { ...st.chest },
+      head: { ...st.head },
+      upperArm: { ...st.upperArm },
+      elbow: st.elbow,
+      thigh: { ...st.thigh },
+    },
   };
 }

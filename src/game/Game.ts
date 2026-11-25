@@ -363,7 +363,8 @@ export class Game {
     this.skier.root.position.lerpVectors(this.prevPos, this.currPos, alpha);
     this.skier.root.quaternion.slerpQuaternions(this.prevQuat, this.currQuat, alpha);
     if (!this.paused) {
-      this.animator.update(this.skier, buildSkierPose(sim.player, this.renderTime, this.poseInput), dt);
+      // The fixed-step alpha also interpolates the crash ragdoll segments (WP-2C).
+      this.animator.update(this.skier, buildSkierPose(sim.player, this.renderTime, this.poseInput, alpha), dt);
       this.cameraCtl.update(this.cameraTarget(), dt);
       this.effects?.update(sim, this.camera.position, dt);
       this.camera.getWorldDirection(_fwd);

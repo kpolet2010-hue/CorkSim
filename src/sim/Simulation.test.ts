@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { Vector3 } from 'three';
 import { ControlInput, type GameAction } from '../input/actions';
 import { getParkById } from '../park/ParkLoader';
 import { makeSlopePark } from '../test/fixtures';
@@ -333,14 +332,20 @@ describe('Crash tumble', () => {
     runFor(sim, input, 4, undefined, () => crashes.length > 0);
     input.set('forward', false);
     expect(crashes.length).toBe(1);
-    let minClearance = Infinity;
+    // The crash body is now the articulated ragdoll (WP-2C): measure its real collision geometry instead of
+    // the removed single capsule. No body part sinks deeper than one step of impact travel (v·dt, the ragdoll
+    // has no CCD) and the pelvis stays on top of the snow.
+    let minProbeGap = Infinity;
+    let minPelvis = Infinity;
     runFor(sim, input, 1.5, (s) => {
-      if (s.player.state !== 'CRASHED') return;
-      const b = s.player.body;
-      const centerY = b.position.y + 0.75 * new Vector3(0, 1, 0).applyQuaternion(b.orientation).y;
-      minClearance = Math.min(minClearance, centerY - s.park.surface.height(b.position.x, b.position.z));
+      const rd = s.player.ragdoll;
+      if (!rd) return;
+      minProbeGap = Math.min(minProbeGap, s.physics.ragdoll.minProbeGap());
+      const p = rd.segments[0].position;
+      minPelvis = Math.min(minPelvis, p.y - s.park.surface.height(p.x, p.z));
     });
-    expect(minClearance).toBeGreaterThan(0.1);
+    expect(minProbeGap).toBeGreaterThan(-0.12);
+    expect(minPelvis).toBeGreaterThan(0.05);
     sim.dispose();
   });
 });

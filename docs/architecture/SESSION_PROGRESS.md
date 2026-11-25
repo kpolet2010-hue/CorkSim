@@ -69,6 +69,68 @@
   - **Next step:** resume the crash-cloud fix (graphics agent, narrow scope), review `s15`/`s13`/`g8`, accept
     WP-2, then WP-5.
 
+## Resumed 2026-11-25 (session 3)
+
+- State verified: tree clean at `2acd27e`, no project servers or agents running. The baseline worktree
+  `baseline-wt` (`5d74a98`) is still registered in the session-2 scratchpad. **Keep it until the user says
+  all comparisons are done.**
+- Baseline before changes: typecheck, lint and build pass; Vitest 141/141; `FREESKI_GPU=1` e2e 10/10.
+- Checkpoint (`2acd27e`) shots of `s13`, `s15` and `g8` were captured before any change, giving a three-way
+  comparison.
+- **Crash-cloud fix finished** (graphics agent). Uncommitted, in `Effects.ts`, `effectsModel.ts`,
+  `effectsModel.test.ts` and `SnowParticles.ts`.
+  - The impact now spawns at the actual contact point (the lowest of feet, hips or head), not under the
+    airborne skis.
+  - Snow is thrown along the slope, so it no longer hovers over the body or flies out of frame.
+  - No double landing+crash burst, dense chunks, and a slide trail only while the body is on the snow.
+  - Checks: Vitest 151/151 (+10), e2e 10/10. `s13` and `g8` are unchanged. In `s15` the pose is fully
+    readable, with a low impact skirt.
+  - Review composites are in the session-3 scratchpad, in `wp2-review/` and `crashfix/v4/*-sheet.png`.
+- **WP-2 is NOT formally accepted.** It waits for the user's review of the three-way comparison. **WP-5 must
+  not start before that.**
+- Open observations for later packages:
+  - Head-first crashes bounce the body about 2 m up (`PhysicsWorld.startTumble` lifts the capsule to at least
+    0.85 m). This belongs to physics.
+  - The chase camera puts the crash contact low in the frame. This belongs to WP-3.
+- New requirement for **WP-3**: hold the right mouse button to orbit the camera (look-around).
+  - Releasing the button stops the rotation.
+  - Suppress `contextmenu` on the game canvas only; normal browser behaviour stays unchanged elsewhere.
+  - Camera-only: it must not affect the simulation.
+- Skier asset: the user prefers "Skieur" (Sketchfab), but it has no license and can't be downloaded. The user
+  will ask the author for permission. Alternatives and a draft request are in `SKIER_ASSET_SEARCH.md`.
+  Nothing has been downloaded, and the procedural skier stays in use.
+
+### Crash redesign WP-2C (session 3, checkpoint commit at the user's request)
+
+- The user rejected the old crash: a rigid capsule, the legs stayed in the ski pose, it spun like a top, and
+  the root snapped on recovery. See `CRASH_REDESIGN.md` for the audit and design.
+- Done and green (typecheck, lint, Vitest 196/196):
+  - Physics: an 11-segment Rapier ragdoll (`Ragdoll.ts`) with fall directions from the crash cause, settle
+    detection and `debugFall`.
+  - Character: the bones are driven only from the ragdoll (`RagdollDriver.ts`), with a blend in and a get-up
+    blend.
+  - Camera: crash framing from the ragdoll body bounds.
+  - Game.ts: the fixed-step alpha is passed to `buildSkierPose`.
+- Recordings:
+  - Old implementation: `scratchpad/crash-old`, plus `crash-old-close`. They are built from a scratch worktree
+    `old-crash-wt` with a test-only `debugFall` shim.
+  - New implementation: the agents' runs are in `wp2c-char` and `wp2c-cam`. A final like-for-like recording
+    of the new build with `scripts/crash-scenarios.mjs` is still to do.
+- **Open before showing the user:**
+  1. Backward fall `g1`: the end pose looks wrong from behind (stiff "T" arms; the shins and skis are not
+     visible). Check from the side by freezing the game with `game.pause()` and moving the camera.
+  2. Physics follow-ups:
+     - At spawn, set `prev = position − v·dt`; the pelvis currently hitches about 0.2 m at crash entry.
+     - Recover only once the body is slow, not by the 5.5 s cap while still sliding.
+     - Show the last ragdoll step at the recover step.
+  3. Render: an arm sweeps overhead in the forward-fall get-up.
+  4. Optional: pass `alpha` to `buildCameraTarget` in `Game.cameraTarget()`.
+  5. Record the final set (12 scenarios plus close-ups).
+- **WP-2 is still open** until the user reviews the recordings. Do not start WP-5.
+- Kept for later comparisons: the worktrees `baseline-wt` (`5d74a98`) and `old-crash-wt` in the scratchpad.
+- Documented for WP-3: the XL kicker air camera falls far behind. Trees can block the crash camera (it has
+  no obstacle query).
+
 ---
 
 _The original pause record follows._

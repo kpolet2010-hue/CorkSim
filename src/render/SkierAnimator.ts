@@ -1,10 +1,11 @@
-﻿import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
+import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
 import type { LandingQuality } from '../landing/LandingEvaluator';
 import type { PlayerState } from '../player/PlayerState';
 import type { RailPress, RailStance } from '../rails/RailSystem';
 import type { GrabDefinition } from '../tricks/grabs';
 import { aimDownAxis, solveTwoBoneIK } from './IK';
 import { grabStyleFor, type GrabStyle } from './skier/grabStyles';
+import { GETUP_TIME, RagdollDriver, type SkierRagdollPose } from './skier/RagdollDriver';
 import { createSpring, damp, ramp, stepSpring, stepSpring3, wobble, type Spring3 } from './skier/springs';
 import { RIG, type SkierModel } from './SkierModel';
 
@@ -50,6 +51,11 @@ export interface SkierPoseInput {
   loadBias: number;
   switchStance: boolean;
   time: number;
+  /**
+   * Crash ragdoll (interpolated world segment transforms). While `ragdoll.active`, the rig shows only
+   * the ragdoll: no layer, IK, spring or noise touches the bones.
+   */
+  ragdoll: SkierRagdollPose;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -146,6 +152,8 @@ const ARM = RIG.upperArm + RIG.forearm;
 const PALM = 0.065;
 /** Grab point height above the ski base (top sheet + glove thickness). */
 const GRAB_HEIGHT = 0.05;
+/** After a crash the recovery crouch holds while the get-up blend lands in it, then stands up (s). */
+const RECOVER_HOLD = GETUP_TIME * 0.6;
 
 const _v = new Vector3();
 const _v2 = new Vector3();
@@ -197,7 +205,7 @@ function skiQuat(rot: Vector3, out: Quaternion): Quaternion {
 
 /**
  * Layered procedural animation. Pose layers (ground riding/carving/braking/charging/tuck, air
- * takeoff/spin/flip/grab/landing-prep, rail, crash, recovery) are computed from the simulation each
+ * takeoff/spin/flip/grab/landing-prep, rail, recovery) are computed from the simulation each
  * frame and blended with damped weights. Secondary motion (crouch compression, hands, head) runs on
  * springs. The rig is then solved with two-bone IK: skis are placed first (on the snow, or where the
  * pose / grab puts them), legs reach the skis, and arms reach their targets - for grabs the real grab
@@ -208,7 +216,6 @@ export class SkierAnimator {
   private readonly ground = new Pose();
   private readonly air = new Pose();
   private readonly rail = new Pose();
-  private readonly crashP = new Pose();
   private readonly cur = new Pose();
   private initialised = false;
 
@@ -216,7 +223,6 @@ export class SkierAnimator {
   private wGround = 1;
   private wAir = 0;
   private wRail = 0;
-  private wCrash = 0;
   private wCarve = 0;
   private wBrake = 0;
   private wCharge = 0;
@@ -240,6 +246,10 @@ export class SkierAnimator {
   private lastGrab: GrabDefinition | null = null;
   private readonly crouch = createSpring(0.35);
   private readonly headPitch = createSpring(0);
+  /** Displays the crash ragdoll, blends into it and owns the get-up transition. */
+  private readonly ragdoll = new RagdollDriver();
+  private ragdollOn = false;
+  private restartFromRagdoll = false;
   private readonly hands: [Spring3, Spring3] = [
     { x: new Vector3(), v: new Vector3() },
     { x: new Vector3(), v: new Vector3() },
@@ -250,28 +260,64 @@ export class SkierAnimator {
   /** Largest distance between an IK foot target and the reached ankle (m), for tests / QA. */
   footError = 0;
 
+  /** True while the crash ragdoll drives the rig (including its blend in). */
+  get ragdollActive(): boolean {
+    return this.ragdoll.active;
+  }
+  /** Ragdoll blend-in weight (0 = animated, 1 = ragdoll), for tests / QA. */
+  get ragdollBlendIn(): number {
+    return this.ragdoll.blendInWeight;
+  }
+  /** True during the get-up blend after a crash. */
+  get gettingUp(): boolean {
+    return this.ragdoll.gettingUp;
+  }
+
   update(m: SkierModel, p: SkierPoseInput, dtIn: number): void {
     const dt = Math.min(Math.max(dtIn, 0), 0.1);
+    const rd = p.ragdoll.active ? p.ragdoll : null;
+    this.ragdollOn = rd !== null;
     this.trackTransitions(p);
     this.updateWeights(p, dt);
+
+    if (rd) {
+      // Physics owns the body: the ragdoll drives every bone; the animation layers do not run.
+      this.ragdoll.drive(m, rd, dt);
+      // The animated pose restarts from the recovery crouch when the get-up begins.
+      this.initialised = false;
+      this.restartFromRagdoll = true;
+      this.lastState = p.state;
+      return;
+    }
+    if (this.ragdoll.active) {
+      // The ragdoll ended (recover()): get up from its last pose.
+      this.ragdoll.beginGetUp();
+      if (this.recoverClock < 0) this.recoverClock = 0;
+    }
 
     this.buildGround(this.ground, p);
     this.buildAir(this.air, p);
     this.buildRail(this.rail, p);
-    this.buildCrash(this.crashP, p);
 
     const t = this.target.clear();
-    const sum = this.wGround + this.wAir + this.wRail + this.wCrash || 1;
+    const sum = this.wGround + this.wAir + this.wRail || 1;
     t.addScaled(this.ground, this.wGround / sum);
     t.addScaled(this.air, this.wAir / sum);
     t.addScaled(this.rail, this.wRail / sum);
-    t.addScaled(this.crashP, this.wCrash / sum);
 
     // Final smoothing stage (kills residual discontinuities, adds a little follow-through).
     if (!this.initialised) {
       this.cur.copy(t);
       this.crouch.x = t.s.crouch;
       for (let i = 0; i < 2; i++) this.hands[i].x.copy(t.hand[i]);
+      if (this.restartFromRagdoll) {
+        // The get-up target starts settled in the recovery crouch (no spring swing from the old pose).
+        this.crouch.v = 0;
+        this.headPitch.x = t.s.neckPitch;
+        this.headPitch.v = 0;
+        for (let i = 0; i < 2; i++) this.hands[i].v.set(0, 0, 0);
+        this.restartFromRagdoll = false;
+      }
       this.initialised = true;
     }
     const k = 1 - Math.exp(-18 * dt);
@@ -281,15 +327,17 @@ export class SkierAnimator {
     this.cur.s.crouch = this.crouch.x;
     stepSpring(this.headPitch, t.s.neckPitch, 3.2, 0.55, dt);
     this.cur.s.neckPitch = this.headPitch.x;
-    const handFreq = this.wCrash > 0.5 ? 3 : 4.5;
     for (let i = 0; i < 2; i++) {
-      stepSpring3(this.hands[i], t.hand[i], handFreq, 0.72, dt);
+      stepSpring3(this.hands[i], t.hand[i], 4.5, 0.72, dt);
       this.cur.hand[i].copy(this.hands[i].x);
     }
 
     const groundExact = GROUND.has(p.state) ? 1 : 0;
     this.legExtend = damp(this.legExtend, groundExact ? Math.min(0.25, Math.max(0, p.groundGap)) : 0, 18, dt);
     this.apply(m, this.cur, groundExact);
+    // Get-up: world-space blend from the last ragdoll pose into this animated pose.
+    if (this.ragdoll.gettingUp) this.ragdoll.applyGetUp(m, this.recoverClock);
+    this.ragdoll.recordAnimated(m);
     this.lastState = p.state;
   }
 
@@ -311,8 +359,12 @@ export class SkierAnimator {
       if (prev === 'CRASHED' && p.state !== 'CRASHED') this.recoverClock = 0;
     }
     if (p.state === 'CRASHED') this.recoverClock = -1;
-    // Deterministic source when available (replays): time since leaving the crash.
-    if (p.previousState === 'CRASHED' && p.state !== 'CRASHED') this.recoverClock = p.timeInState;
+    // Deterministic source (replays): time since leaving the crash. The fixed-step clock is quantised,
+    // so the frame clock runs on and is re-synchronised whenever it drifts by more than two steps.
+    if (p.previousState === 'CRASHED' && p.state !== 'CRASHED') {
+      if (this.recoverClock < 0 || Math.abs(this.recoverClock - p.timeInState) > 1 / 30)
+        this.recoverClock = p.timeInState;
+    }
     if (Math.abs(p.edgeAngle) > 0.08) this.lastTurn = Math.sign(p.edgeAngle);
   }
 
@@ -320,14 +372,13 @@ export class SkierAnimator {
     const s = p.state;
     const air = s === 'AIRBORNE';
     const rail = s === 'RAIL_GRINDING';
-    const crash = s === 'CRASHED';
-    const ground = !air && !rail && !crash;
+    // A crash is displayed by the ragdoll; the animated layers keep the ground pose (the get-up target).
+    const ground = !air && !rail;
     // Touch-down must be quick (skis on the snow), take-off a little softer.
     const toGround = ground && this.wGround < 0.999 ? 22 : 10;
     this.wGround = damp(this.wGround, ground ? 1 : 0, toGround, dt);
     this.wAir = damp(this.wAir, air ? 1 : 0, 12, dt);
     this.wRail = damp(this.wRail, rail ? 1 : 0, 14, dt);
-    this.wCrash = damp(this.wCrash, crash ? 1 : 0, 9, dt);
 
     this.wCarve = damp(this.wCarve, Math.min(1, Math.abs(p.edgeAngle) / 0.35), 10, dt);
     this.wBrake = damp(this.wBrake, s === 'BRAKING' ? p.brake : 0, 7, dt);
@@ -483,7 +534,9 @@ export class SkierAnimator {
       P.s.pelvisZ -= 0.05 * a;
       for (let i = 0; i < 2; i++) {
         const ph = sc * 11 + i * Math.PI;
-        P.hand[i].add(_v.set(SIDE[i] * 0.2 * a, 0.35 * a * (0.6 + Math.sin(ph) * 0.5), 0.2 * a * Math.cos(ph)));
+        P.hand[i].add(
+          _v.set(SIDE[i] * 0.2 * a, 0.35 * a * (0.6 + Math.sin(ph) * 0.5), 0.2 * a * Math.cos(ph)),
+        );
       }
     }
 
@@ -493,9 +546,9 @@ export class SkierAnimator {
       P.s.spineYaw += 0.35 * this.wSwitch;
     }
 
-    // Recovery after a crash: start low (hands on knees) and stand up.
-    if (this.recoverClock >= 0) {
-      const wr = 1 - ramp(0.05, 1.05, this.recoverClock);
+    // Recovery after a crash: start low (hands on knees, the get-up blend lands here) and stand up.
+    if (this.recoverClock >= 0 || this.ragdollOn) {
+      const wr = this.ragdollOn ? 1 : 1 - ramp(RECOVER_HOLD, RECOVER_HOLD + 1.0, this.recoverClock);
       if (wr > 0) {
         crouch += (1.35 - crouch) * wr;
         P.s.spinePitch += 0.75 * wr;
@@ -503,6 +556,18 @@ export class SkierAnimator {
         for (let i = 0; i < 2; i++) {
           P.hand[i].lerp(_v.set(SIDE[i] * 0.2, -0.56, 0.3), wr);
           P.pole[i].lerp(_v.set(SIDE[i] * 0.4, -0.8, 0.2).normalize(), wr);
+        }
+      }
+      // Getting up from the snow: deeper, chest over the skis, hands down beside the boots pushing off,
+      // poles pointing back. Released into the hands-on-knees crouch as the get-up blend completes.
+      const wpush = this.ragdollOn ? 1 : 1 - ramp(GETUP_TIME * 0.35, GETUP_TIME * 0.95, this.recoverClock);
+      if (wpush > 0) {
+        crouch += (1.5 - crouch) * wpush;
+        P.s.spinePitch += 0.3 * wpush;
+        P.s.neckPitch -= 0.25 * wpush;
+        for (let i = 0; i < 2; i++) {
+          P.hand[i].lerp(_v.set(SIDE[i] * 0.3, -0.66, 0.42), wpush);
+          P.pole[i].lerp(_v.set(SIDE[i] * 0.35, -0.45, -0.82).normalize(), wpush);
         }
       }
     }
@@ -554,10 +619,7 @@ export class SkierAnimator {
       for (let i = 0; i < 2; i++) {
         const lead = SIDE[i] === sg ? 1 : 0;
         // Leading arm sweeps across and back, trailing arm wraps across the chest.
-        P.hand[i].lerp(
-          lead ? _v.set(SIDE[i] * 0.42, -0.06, -0.2) : _v.set(-SIDE[i] * 0.06, -0.1, 0.32),
-          ws,
-        );
+        P.hand[i].lerp(lead ? _v.set(SIDE[i] * 0.42, -0.06, -0.2) : _v.set(-SIDE[i] * 0.06, -0.1, 0.32), ws);
       }
     }
 
@@ -651,35 +713,6 @@ export class SkierAnimator {
     }
   }
 
-  private buildCrash(P: Pose, p: SkierPoseInput): void {
-    this.neutral(P);
-    const t = p.time;
-    // Tumbling hard: flailing limbs; settling: limp.
-    const tumble = ramp(0.6, 4, p.spinRate + p.speed * 0.15) * (1 - ramp(1.2, 2.6, p.timeInState) * 0.6);
-    const f = 2.2 + Math.min(6, p.spinRate) * 0.7;
-    P.s.crouch = 0.5 + wobble(t * f * 0.5, 11) * 0.25 * tumble;
-    P.s.spinePitch = 0.25 + wobble(t * f * 0.6, 12) * 0.45 * tumble;
-    P.s.spineRoll = wobble(t * f * 0.4, 13) * 0.35 * tumble;
-    P.s.spineYaw = wobble(t * f * 0.45, 14) * 0.4 * tumble;
-    P.s.neckPitch = 0.2 + wobble(t * f * 0.8, 15) * 0.5 * tumble;
-    P.s.neckRoll = wobble(t * f * 0.7, 16) * 0.35;
-    for (let i = 0; i < 2; i++) {
-      const sd = SIDE[i];
-      P.hand[i].set(
-        sd * (0.5 + wobble(t * f, 20 + i) * 0.18 * tumble),
-        -0.05 + wobble(t * f * 1.1, 22 + i) * 0.4 * tumble,
-        0.12 + wobble(t * f * 0.9, 24 + i) * 0.35 * tumble,
-      );
-      P.pole[i].set(sd * 0.6 + wobble(t * f, 26 + i) * 0.5, -0.4, -0.6 + wobble(t * f, 28 + i) * 0.6).normalize();
-      P.ski[i].set(
-        sd * (0.16 + Math.abs(wobble(t * f * 0.7, 30 + i)) * 0.14 * tumble),
-        0.18 + Math.abs(wobble(t * f * 0.8, 32 + i)) * 0.25 * tumble,
-        wobble(t * f * 0.6, 34 + i) * 0.22 * tumble,
-      );
-      P.skiRot[i].set(wobble(t * f * 0.5, 36 + i) * 0.4 * tumble, sd * 0.15, sd * 0.2);
-    }
-  }
-
   // -------------------------------------------------------------------------------------------------
   // Rig solve
 
@@ -692,6 +725,11 @@ export class SkierAnimator {
     m.body.position.set(0, -this.legExtend, 0);
     _e.set(s.bodyPitch, s.bodyYaw, 0, 'YXZ');
     m.body.quaternion.setFromEuler(_e);
+    // Rest bones the layers never pose (the ragdoll and the get-up blend write them).
+    for (let i = 0; i < 2; i++) {
+      m.hips[i].quaternion.identity();
+      m.skis[i].quaternion.identity();
+    }
 
     // Pelvis: height from crouch, pivoting about the feet for the visual lean (edge angle).
     const crouch = Math.max(-0.1, Math.min(1.5, s.crouch));
@@ -719,7 +757,7 @@ export class SkierAnimator {
 
     m.body.getWorldQuaternion(_bodyQ);
     _bodyInv.copy(m.body.matrixWorld).invert();
-    
+
     // --- Skis (body space): from the pose, or solved from the grabbing hand -------------------------
     const g = this.lastGrab;
     const wg = this.wGrab * this.wAir;
@@ -771,14 +809,19 @@ export class SkierAnimator {
           m.pelvis.position.addScaledVector(_v.subVectors(_ankle, _hip).normalize(), d - maxReach);
           m.pelvis.updateMatrixWorld(true);
         } else {
-          const pull = _v.subVectors(_hip, _ankle).normalize().multiplyScalar(d - maxReach);
+          const pull = _v
+            .subVectors(_hip, _ankle)
+            .normalize()
+            .multiplyScalar(d - maxReach);
           _ankle.add(pull);
         }
       }
       _target.copy(_ankle).applyMatrix4(m.body.matrixWorld);
       // Knees point along the ski (plus a little outwards); fall back to "up" when the leg is kicked
       // forward along the pole axis.
-      _poleW.set(Math.sin(P.skiRot[i].y) + SIDE[i] * 0.12, 0.05, Math.cos(P.skiRot[i].y)).applyQuaternion(_bodyQ);
+      _poleW
+        .set(Math.sin(P.skiRot[i].y) + SIDE[i] * 0.12, 0.05, Math.cos(P.skiRot[i].y))
+        .applyQuaternion(_bodyQ);
       _fallbackW.set(0, 1, 0.2).applyQuaternion(_bodyQ);
       solveTwoBoneIK(m.thighs[i], m.shins[i], RIG.thigh, RIG.shin, _target, _poleW, {
         minReach: 0.3,

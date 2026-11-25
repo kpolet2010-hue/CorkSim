@@ -140,6 +140,9 @@ camera/feel, tricks, UI/audio, QA, performance). This section is the complete pl
 - Camera goals: impact-shaped shake (trauma model instead of random jitter), speed FOV, air framing that
   keeps skier and landing in view (the cork shot currently sits low behind the kicker), rail framing and
   terrain-clip avoidance.
+- Look-around (user requirement, 2026-11-25): hold the right mouse button and move the mouse to orbit the
+  camera. Releasing the button stops the rotation. Suppress `contextmenu` on the game canvas only, with no
+  effect on browser behaviour outside it. Camera-only: it must never feed into the simulation or physics.
 - Replay goals:
   - `ReplayRecorder` (preallocated ring buffer, ~20 s at 60 Hz, records transform + `SkierPoseInput` +
     camera-target fields per fixed step).

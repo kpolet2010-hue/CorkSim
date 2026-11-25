@@ -1,6 +1,8 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Quaternion, Vector3 } from 'three';
+import type { CrashConfig } from '../config/physicsConfig';
 import type { Park } from '../park/Park';
+import { Ragdoll, type RagdollSpawn } from './Ragdoll';
 
 let rapierReady: Promise<void> | null = null;
 
@@ -23,7 +25,7 @@ export type ObstacleKind = 'tree' | 'support' | 'box';
 
 /**
  * Rapier integration. Rapier owns the *solid* world: trees, rail/box supports and box bodies (crash
- * obstacles), plus a triangle-mesh copy of the snow surface used for the physically simulated crash tumble.
+ * obstacles), plus a triangle-mesh copy of the snow surface used for the articulated crash ragdoll.
  * Normal skiing contact uses the analytic SurfaceField (smooth normals, no triangle faceting) - see
  * DEVELOPMENT.md for the trade-off.
  */
@@ -31,7 +33,8 @@ export class PhysicsWorld {
   readonly world: RAPIER.World;
   private readonly obstacleKinds = new Map<number, ObstacleKind>();
   private readonly skierShape: RAPIER.Capsule;
-  private tumbleBody: RAPIER.RigidBody | null = null;
+  /** Articulated crash ragdoll (bodies exist only while crashed). */
+  readonly ragdoll: Ragdoll;
   private readonly _pos = { x: 0, y: 0, z: 0 };
   private readonly _rot = { x: 0, y: 0, z: 0, w: 1 };
 
@@ -41,6 +44,12 @@ export class PhysicsWorld {
     this.skierShape = new RAPIER.Capsule(0.5, 0.26);
     this.buildSnowCollider(park);
     this.buildObstacles(park);
+    // Rapier 0.19 scene queries run on the broad-phase BVH, which is only built by a world step: without
+    // this, `checkObstacleHit` sees no obstacle until the first crash has stepped the world. The world has
+    // no dynamic bodies yet, so this step only builds the query structures.
+    this.world.step();
+    // Skier parts collide with the snow and obstacles only, never with each other.
+    this.ragdoll = new Ragdoll(this.world, park.surface, groups(GROUP_SKIER, GROUP_SNOW | GROUP_OBSTACLE));
   }
 
   static async create(park: Park): Promise<PhysicsWorld> {
@@ -102,7 +111,9 @@ export class PhysicsWorld {
         idx[q++] = d;
       }
     }
-    const desc = RAPIER.ColliderDesc.trimesh(verts, idx)
+    // FIX_INTERNAL_EDGES: no ghost collisions on interior triangle edges (skis and limbs sliding fast over
+    // the mesh would otherwise catch on them and pole-vault the ragdoll).
+    const desc = RAPIER.ColliderDesc.trimesh(verts, idx, RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES)
       .setFriction(0.35)
       .setRestitution(0.05)
       .setCollisionGroups(groups(GROUP_SNOW, GROUP_SKIER));
@@ -179,65 +190,32 @@ export class PhysicsWorld {
     return this.obstacleKinds.get(hit.handle) ?? 'tree';
   }
 
-  /** Starts a physically simulated tumble (crash) from the skier's current state. */
-  startTumble(
-    footPosition: Vector3,
-    orientation: Quaternion,
-    velocity: Vector3,
-    angularVelocity: Vector3,
-    snowHeight: number,
-  ): void {
-    this.endTumble();
-    const up = new Vector3(0, 1, 0).applyQuaternion(orientation);
-    const center = footPosition.clone().addScaledVector(up, 0.75);
-    // Never spawn the body inside the snow (e.g. when landing upside down).
-    center.y = Math.max(center.y, snowHeight + 0.85);
-    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(center.x, center.y + 0.05, center.z)
-      .setRotation({ x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w })
-      .setLinvel(velocity.x, velocity.y, velocity.z)
-      .setAngvel({ x: angularVelocity.x * 0.6, y: angularVelocity.y * 0.6, z: angularVelocity.z * 0.6 })
-      .setLinearDamping(0.25)
-      .setAngularDamping(1.2)
-      .setCcdEnabled(true);
-    this.tumbleBody = this.world.createRigidBody(bodyDesc);
-    const colDesc = RAPIER.ColliderDesc.capsule(0.45, 0.3)
-      .setFriction(0.55)
-      .setRestitution(0.15)
-      .setDensity(160)
-      .setCollisionGroups(groups(GROUP_SKIER, GROUP_SNOW | GROUP_OBSTACLE));
-    this.world.createCollider(colDesc, this.tumbleBody);
+  /** Spawns the articulated crash ragdoll from the skier's state (replaces any previous one). */
+  startRagdoll(cfg: CrashConfig, skierMass: number, spawn: RagdollSpawn): void {
+    this.ragdoll.spawn(cfg, skierMass, spawn);
   }
 
   get tumbling(): boolean {
-    return this.tumbleBody !== null;
+    return this.ragdoll.active;
   }
 
-  /** Steps the tumble simulation and writes the result back (foot point derived from capsule centre). */
-  stepTumble(outFoot: Vector3, outOrientation: Quaternion, outVelocity: Vector3, outAngular: Vector3): void {
-    const b = this.tumbleBody;
-    if (!b) return;
+  /**
+   * Steps the ragdoll: our joint/snow torques, then the Rapier world step, then the read-back. Returns
+   * false if the result is not finite.
+   */
+  stepRagdoll(dt: number): boolean {
+    if (!this.ragdoll.active) return true;
+    this.ragdoll.beforeStep(dt);
     this.world.step();
-    const t = b.translation();
-    const r = b.rotation();
-    const lv = b.linvel();
-    const av = b.angvel();
-    outOrientation.set(r.x, r.y, r.z, r.w).normalize();
-    const up = new Vector3(0, 1, 0).applyQuaternion(outOrientation);
-    outFoot.set(t.x, t.y, t.z).addScaledVector(up, -0.75);
-    outVelocity.set(lv.x, lv.y, lv.z);
-    outAngular.set(av.x, av.y, av.z);
+    return this.ragdoll.afterStep(dt);
   }
 
-  endTumble(): void {
-    if (this.tumbleBody) {
-      this.world.removeRigidBody(this.tumbleBody);
-      this.tumbleBody = null;
-    }
+  endRagdoll(): void {
+    this.ragdoll.despawn();
   }
 
   dispose(): void {
-    this.endTumble();
+    this.endRagdoll();
     this.world.free();
   }
 }

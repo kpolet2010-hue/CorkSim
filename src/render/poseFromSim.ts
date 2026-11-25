@@ -1,5 +1,6 @@
 import { Quaternion, Vector3 } from 'three';
 import type { PlayerController } from '../player/PlayerController';
+import { createSkierRagdollPose, RAGDOLL_POSE_CAPACITY } from './skier/RagdollDriver';
 import type { SkierPoseInput } from './SkierAnimator';
 
 const _q = new Quaternion();
@@ -36,6 +37,7 @@ export function createSkierPoseInput(): SkierPoseInput {
     loadBias: 0,
     switchStance: false,
     time: 0,
+    ragdoll: createSkierRagdollPose(),
   };
 }
 
@@ -43,8 +45,15 @@ export function createSkierPoseInput(): SkierPoseInput {
  * Builds the animation input from the (read-only) simulation state. This is the single sim -> animation
  * mapping; extend `SkierPoseInput` and this function together. Owned by character/animation.
  * Pass `out` to reuse an object (no per-frame allocation); otherwise a new object is returned.
+ * `alpha` is the fixed-step interpolation factor of this render frame (the same one the root transform
+ * uses): the crash ragdoll segments are interpolated between their previous and current step with it.
  */
-export function buildSkierPose(player: PlayerController, time: number, out?: SkierPoseInput): SkierPoseInput {
+export function buildSkierPose(
+  player: PlayerController,
+  time: number,
+  out?: SkierPoseInput,
+  alpha = 1,
+): SkierPoseInput {
   const p = out ?? createSkierPoseInput();
   const body = player.body;
   const grab = player.grabs.poseDefinition;
@@ -81,5 +90,26 @@ export function buildSkierPose(player: PlayerController, time: number, out?: Ski
   p.loadBias = l + r > 1e-3 ? (r - l) / (l + r) : 0;
   p.switchStance = player.switchStance;
   p.time = time;
+
+  // Crash ragdoll: interpolated world transforms of every segment.
+  const rv = player.ragdoll;
+  const rp = p.ragdoll;
+  if (rv) {
+    const a = Math.min(1, Math.max(0, Number.isFinite(alpha) ? alpha : 1));
+    const n = Math.min(rv.segments.length, RAGDOLL_POSE_CAPACITY);
+    for (let i = 0; i < n; i++) {
+      const seg = rv.segments[i];
+      rp.positions[i].lerpVectors(seg.prevPosition, seg.position, a);
+      rp.quaternions[i].slerpQuaternions(seg.prevQuaternion, seg.quaternion, a);
+    }
+    rp.count = n;
+    rp.info = rv.info;
+    rp.bootLean = rv.bootLean;
+    rp.pelvisVelocity.copy(rv.segments[0].velocity);
+    rp.time = rv.time;
+    rp.active = true;
+  } else {
+    rp.active = false;
+  }
   return p;
 }
