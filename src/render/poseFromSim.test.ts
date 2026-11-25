@@ -1,3 +1,4 @@
+import { Quaternion, Vector3 } from 'three';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ControlInput } from '../input/actions';
 import { getParkById } from '../park/ParkLoader';
@@ -40,5 +41,33 @@ describe('buildSkierPose', () => {
     expect(b.angularVelocity.equals(before[3] as typeof b.angularVelocity)).toBe(true);
     // Without `out` a fresh object is returned (backwards compatible call).
     expect(buildSkierPose(sim.player, 0)).not.toBe(out);
+  });
+
+  it('maps the travel direction into the body frame (travelYaw)', async () => {
+    const sim = await Simulation.create(getParkById('glacier-park'));
+    sims.push(sim);
+    const input = new ControlInput();
+    input.down.forward = true;
+    for (let i = 0; i < 120; i++) {
+      sim.step(input);
+      input.clearEdges();
+    }
+    const b = sim.player.body;
+    const p = buildSkierPose(sim.player, 0);
+    expect(b.speed).toBeGreaterThan(1);
+    // Riding forward: travel close to straight ahead.
+    expect(Math.abs(p.travelYaw)).toBeLessThan(0.35);
+    // The same velocity seen from a body turned around (read-only probe on a copy of the orientation).
+    const orientation = b.orientation.clone();
+    const yawPi = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI);
+    b.orientation.premultiply(yawPi);
+    const back = buildSkierPose(sim.player, 0).travelYaw;
+    b.orientation.copy(orientation);
+    expect(Math.PI - Math.abs(back)).toBeLessThan(0.35);
+    // Below about 1 m/s the travel direction is undefined: 0.
+    const vel = b.velocity.clone();
+    b.velocity.setLength(0.5);
+    expect(buildSkierPose(sim.player, 0).travelYaw).toBe(0);
+    b.velocity.copy(vel);
   });
 });

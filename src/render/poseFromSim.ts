@@ -5,6 +5,9 @@ import type { SkierPoseInput } from './SkierAnimator';
 
 const _q = new Quaternion();
 const _w = new Vector3();
+const _vl = new Vector3();
+/** Below this ground-plane speed (m/s) the travel direction is undefined and `travelYaw` is 0. */
+const TRAVEL_MIN_SPEED = 1;
 
 /** A neutral pose input (standing still). Useful for tests, previews and replay initialisation. */
 export function createSkierPoseInput(): SkierPoseInput {
@@ -36,6 +39,7 @@ export function createSkierPoseInput(): SkierPoseInput {
     skidSpeed: 0,
     loadBias: 0,
     switchStance: false,
+    travelYaw: 0,
     time: 0,
     ragdoll: createSkierRagdollPose(),
   };
@@ -89,6 +93,10 @@ export function buildSkierPose(
   const r = body.skis[1].load;
   p.loadBias = l + r > 1e-3 ? (r - l) / (l + r) : 0;
   p.switchStance = player.switchStance;
+  // Direction of travel in the body frame (ground plane): 0 = straight ahead, +-PI = straight behind,
+  // > 0 towards the body's left (+X).
+  _vl.copy(body.velocity).applyQuaternion(_q.copy(body.orientation).invert());
+  p.travelYaw = Math.hypot(_vl.x, _vl.z) >= TRAVEL_MIN_SPEED ? Math.atan2(_vl.x, _vl.z) : 0;
   p.time = time;
 
   // Crash ragdoll: interpolated world transforms of every segment.

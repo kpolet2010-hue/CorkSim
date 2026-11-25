@@ -50,6 +50,11 @@ export interface SkierPoseInput {
   /** Load distribution between the skis: -1 all left .. +1 all right. */
   loadBias: number;
   switchStance: boolean;
+  /**
+   * Direction of the ground-plane velocity in the body frame: atan2(local x, local z), so 0 = straight
+   * ahead, +-PI = straight behind, > 0 towards the body's left (+X). 0 below about 1 m/s.
+   */
+  travelYaw: number;
   time: number;
   /**
    * Crash ragdoll (interpolated world segment transforms). While `ragdoll.active`, the rig shows only
@@ -159,6 +164,61 @@ const GRAB_HEIGHT = 0.05;
 /** After a crash the recovery crouch holds while the get-up blend lands in it, then stands up (s). */
 const RECOVER_HOLD = GETUP_TIME * 0.6;
 
+// Switch look-back: the yaw needed to see the direction of travel, spread from the hips to the head.
+/** Pelvis opening towards the look side (rad). */
+const LOOK_PELVIS = 0.2;
+/** Spine + chest twist (rad, split evenly over the two bones). */
+const LOOK_SPINE = 0.6;
+/** Neck + head turn (rad, split evenly; a comfortable head turn is about 70 degrees). */
+const LOOK_NECK = 1.2;
+/** Largest total look yaw relative to the skis (rad). */
+export const LOOK_MAX = LOOK_PELVIS + LOOK_SPINE + LOOK_NECK;
+/** Neck + head yaw while looking back: linear up to the knee, then approaches the limit softly (rad). */
+const NECK_YAW_KNEE = 1.15;
+const NECK_YAW_LIMIT = 1.4;
+
+/** Identity up to |x| = knee, then a smooth (C1) tanh roll-off towards +-limit. */
+export function softLimit(x: number, knee: number, limit: number): number {
+  const a = Math.abs(x);
+  if (a <= knee) return x;
+  const r = limit - knee;
+  return Math.sign(x) * (knee + r * Math.tanh((a - knee) / r));
+}
+/** The look shoulder changes only once the travel is this far (rad) to the other side of straight back. */
+const LOOK_HYSTERESIS = (15 * Math.PI) / 180;
+/** Shift of the shoulder choice towards the inside of the turn per radian of edge angle. */
+const LOOK_CARVE_BIAS = 0.6;
+/** Look-yaw spring: natural frequency (Hz) and the rate limit (rad/s) of the whole look. */
+const LOOK_FREQ = 1.0;
+const LOOK_MAX_RATE = 7;
+/** Largest integration step of the look spring (s). */
+const LOOK_STEP = 1 / 120;
+
+/**
+ * Critically damped, rate-limited spring for the switch look yaw. Sub-stepped so the motion is (nearly)
+ * independent of the frame rate; deterministic for the same inputs and dt. Settles exactly on a zero
+ * target so forward riding returns to the exact stance.
+ */
+export function stepLookSpring(s: { x: number; v: number }, target: number, dt: number): void {
+  const w = 2 * Math.PI * LOOK_FREQ;
+  let remaining = Math.max(0, dt);
+  while (remaining > 1e-7) {
+    const h = Math.min(remaining, LOOK_STEP);
+    s.v += (w * w * (target - s.x) - 2 * w * s.v) * h;
+    s.v = Math.max(-LOOK_MAX_RATE, Math.min(LOOK_MAX_RATE, s.v));
+    s.x += s.v * h;
+    remaining -= h;
+  }
+  if (!Number.isFinite(s.x) || !Number.isFinite(s.v)) {
+    s.x = target;
+    s.v = 0;
+  }
+  if (target === 0 && Math.abs(s.x) < 1e-4 && Math.abs(s.v) < 1e-3) {
+    s.x = 0;
+    s.v = 0;
+  }
+}
+
 const _v = new Vector3();
 const _v2 = new Vector3();
 const _v3 = new Vector3();
@@ -235,7 +295,13 @@ export class SkierAnimator {
   private wSpin = 0;
   private wFlip = 0;
   private wPrep = 0;
+  /** Switch look-back amount 0..1 (|look yaw| / LOOK_MAX), ground riding only. */
   private wSwitch = 0;
+  /** Signed switch look yaw (rad, > 0 = over the left shoulder), spring driven. */
+  private readonly look = createSpring(0);
+  /** Shoulder the rider looks over while switch (1 = left, -1 = right); kept across straight-back. */
+  private lookSide = 1;
+  private wasSwitch = false;
   private wGrab = 0;
   private spinSign = 1;
   private flipSign = 1;
@@ -389,7 +455,7 @@ export class SkierAnimator {
     this.wCharge = damp(this.wCharge, s === 'JUMP_CHARGING' ? 1 : 0, 14, dt);
     this.wTuck = damp(this.wTuck, p.tucking && ground ? 1 : 0, 6, dt);
     this.wIdle = damp(this.wIdle, s === 'IDLE' && p.speed < 1.5 ? 1 : 0, 3, dt);
-    this.wSwitch = damp(this.wSwitch, p.switchStance && ground ? 1 : 0, 4, dt);
+    this.updateLook(p, ground, dt);
 
     const spin = Math.abs(p.localSpin);
     const flip = Math.abs(p.localFlip);
@@ -409,6 +475,34 @@ export class SkierAnimator {
     if (this.landClock >= 0) this.landClock += dt;
     if (this.sketchyClock > 1.4) this.sketchyClock = -1;
     if (this.landClock > 1.0) this.landClock = -1;
+  }
+
+  /**
+   * Switch look-back target: the yaw from the skis' heading to the direction of travel, over one
+   * shoulder. The shoulder follows the lateral side of the travel (biased to the inside of a carve) with
+   * hysteresis around straight back; the yaw runs on a critically damped, rate-limited spring, so a
+   * shoulder change sweeps smoothly through the centre and leaving switch returns exactly to zero.
+   */
+  private updateLook(p: SkierPoseInput, ground: boolean, dt: number): void {
+    const on = p.switchStance && ground;
+    let target = 0;
+    if (on) {
+      const ty = p.travelYaw;
+      const known = ty !== 0;
+      // Offset of the travel from straight back (> 0 = behind-left), plus the carve bias.
+      const off = (known ? Math.sign(ty) * (Math.PI - Math.abs(ty)) : 0) + LOOK_CARVE_BIAS * p.edgeAngle;
+      if (!this.wasSwitch) {
+        if (Math.abs(off) > 0.02) this.lookSide = Math.sign(off);
+      } else if (off > LOOK_HYSTERESIS) this.lookSide = 1;
+      else if (off < -LOOK_HYSTERESIS) this.lookSide = -1;
+      // Yaw needed over the chosen shoulder (straight back when the travel direction is unknown).
+      const a = known ? Math.abs(ty) : Math.PI;
+      const need = !known || Math.sign(ty) === this.lookSide ? a : 2 * Math.PI - a;
+      target = this.lookSide * Math.min(need, LOOK_MAX);
+    }
+    this.wasSwitch = on;
+    stepLookSpring(this.look, target, dt);
+    this.wSwitch = Math.min(1, Math.abs(this.look.x) / LOOK_MAX);
   }
 
   // -------------------------------------------------------------------------------------------------
@@ -551,10 +645,27 @@ export class SkierAnimator {
       }
     }
 
-    // Switch riding: look over the shoulder down the hill.
-    if (this.wSwitch > 0.001) {
-      P.s.neckYaw += 1.05 * this.wSwitch;
-      P.s.spineYaw += 0.35 * this.wSwitch;
+    // Switch riding: look back over the shoulder towards the direction of travel. The yaw is spread from
+    // the hips up (pelvis opens a little, spine and chest twist, neck and head do most of it); the look-
+    // side shoulder drops slightly, the eyes go down to the snow behind, the lead hand drifts back and
+    // the trail hand forward. Purely additive on top of the forward stance and zero when not switch.
+    const look = this.look.x;
+    if (look !== 0) {
+      const ws = this.wSwitch;
+      const side = Math.sign(look);
+      P.s.pelvisYaw += look * (LOOK_PELVIS / LOOK_MAX);
+      P.s.spineYaw += look * (LOOK_SPINE / LOOK_MAX);
+      // Soft ceiling so the carve / idle head motion on top never over-rotates the neck.
+      P.s.neckYaw = softLimit(P.s.neckYaw + look * (LOOK_NECK / LOOK_MAX), NECK_YAW_KNEE, NECK_YAW_LIMIT);
+      P.s.spineRoll -= side * 0.09 * ws;
+      P.s.neckRoll -= side * 0.05 * ws;
+      P.s.neckPitch += 0.14 * ws;
+      for (let i = 0; i < 2; i++) {
+        const lead = SIDE[i] === side;
+        const h = P.hand[i];
+        if (lead) h.set(h.x + SIDE[i] * 0.03 * ws, h.y + 0.02 * ws, h.z - 0.1 * ws);
+        else h.set(h.x - SIDE[i] * 0.03 * ws, h.y, h.z + 0.07 * ws);
+      }
     }
 
     // Recovery after a crash: start low (hands on knees, the get-up blend lands here) and stand up.
