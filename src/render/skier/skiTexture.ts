@@ -7,7 +7,7 @@ export interface TopSheetColors {
 }
 
 /**
- * Procedural twin-tip top-sheet graphic (pale sheet, lengthwise wordmark, binding-zone marks).
+ * Procedural twin-tip top-sheet graphic (pale sheet, lighter tips, binding-zone marks; no lettering).
  * The texture is mapped with u across the ski and v from tail (0) to tip (1). Returns null when no DOM
  * canvas is available (tests, workers) - the ski then falls back to vertex colours.
  */
@@ -28,7 +28,6 @@ export function createSkiTopSheet(c: TopSheetColors): CanvasTexture | null {
   const css = (hex: number) => `#${new Color(hex).getHexString()}`;
   const base = css(c.base);
   const accent = css(c.accent);
-  const ink = css(c.ink);
 
   // Clean pale top sheet, slightly lighter towards both (twin) tips.
   ctx.fillStyle = base;
@@ -40,22 +39,6 @@ export function createSkiTopSheet(c: TopSheetColors): CanvasTexture | null {
     ctx.fillStyle = g;
     ctx.fillRect(0, flip ? H * 0.8 : 0, W, H * 0.2);
   }
-
-  // Large lengthwise wordmark on the tail half (reads from the side and from behind), small one near
-  // the tip. Original wordmark, no brand.
-  const word = (cy: number, size: number) => {
-    ctx.save();
-    ctx.translate(W / 2, cy);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillStyle = ink;
-    ctx.font = `900 ${size}px "Arial Black", Arial, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('CORK7', 0, 1);
-    ctx.restore();
-  };
-  word(H * 0.3, 34);
-  word(H * 0.8, 18);
 
   // Fine binding-zone marks and edge pinstripes in the accent colour.
   ctx.fillStyle = accent;
