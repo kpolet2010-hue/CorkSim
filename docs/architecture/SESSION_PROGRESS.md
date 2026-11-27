@@ -141,6 +141,21 @@
 - Documented for WP-3: the XL kicker air camera falls far behind. Trees can block the crash camera (it has
   no obstacle query).
 
+## Resumed 2026-11-26 (session 4): WP-2C continued
+
+- State at start: tree clean at `b237d7e` (approved stance and switch look-back, untouched this session). No
+  agents running. The session-3 scratchpad (old recordings, `baseline-wt`, `old-crash-wt`) had been cleared;
+  the old-build recordings were regenerated from a new `old-crash-wt` worktree of `2acd27e` with the same
+  test-only `debugFall` shim, using the same script and settings.
+- Fixes (details and causes in `CRASH_REDESIGN.md` §2.6): forward ground falls without the knee-locking trip, plus
+  a knee minimum; self-arrest; spawn `prev` continuity; 1.5 s staged get-up; 3/4 crash camera; solid nets and
+  rail pipes for the ragdoll; recovery stays on its side of the net.
+- New recordings (`scratchpad/crash-new`, one browser session per scenario because of machine load) and old |
+  new side-by-sides (`scratchpad/compare`) are published for review as the artifact "Freeski Crash Review".
+- **WP-2 is still open** until the user approves the recordings. WP-5 not started. Nothing committed.
+- Test notes: `Ragdoll.test.ts` "pelvis rotation dies out" and the Vitest worker RPC can exceed their 5 s timeouts
+  when the laptop is under background load (also on the untouched baseline). The assertions pass.
+
 ---
 
 _The original pause record follows._

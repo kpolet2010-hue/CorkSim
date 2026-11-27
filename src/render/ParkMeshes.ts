@@ -18,7 +18,7 @@ import {
   type Texture,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Park, RailObstacle } from '../park/Park';
+import { FENCE_INSET, FENCE_SPACING, FENCE_START, type Park, type RailObstacle } from '../park/Park';
 import type { FeatureSample, SurfaceFeature } from '../park/SurfaceFeatures';
 import { smoothstep as smoothstepJs } from '../core/math';
 import { getParkTheme, type ParkTheme } from './parkTheme';
@@ -543,19 +543,19 @@ export class ParkMeshes {
   /** Orange safety nets on posts along both corridor edges, with a top rope. */
   private addFences(shadows: boolean): void {
     const bag = this.bag;
-    const half = this.park.config.terrain.halfWidth - 1.5;
+    const half = this.park.config.terrain.halfWidth - FENCE_INSET;
     const posts: BufferGeometry[] = [];
     const netPos: number[] = [];
     const netUv: number[] = [];
     const netIdx: number[] = [];
     const ropes: BufferGeometry[] = [];
     const len = this.park.config.terrain.length;
-    const spacing = 4;
+    const spacing = FENCE_SPACING;
     for (const side of [-1, 1]) {
       let prev: number | null = null;
       let prevTop: Vector3 | null = null;
       let u = 0;
-      for (let z = 20; z < len; z += spacing) {
+      for (let z = FENCE_START; z < len; z += spacing) {
         const x = side * half;
         const y = this.park.terrain.height(x, z);
         const p = new CylinderGeometry(0.035, 0.04, 1.4, 6);

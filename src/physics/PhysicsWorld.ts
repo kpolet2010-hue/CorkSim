@@ -1,7 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { Quaternion, Vector3 } from 'three';
 import type { CrashConfig } from '../config/physicsConfig';
-import type { Park } from '../park/Park';
+import { FENCE_HEIGHT, FENCE_INSET, FENCE_SPACING, FENCE_START, type Park } from '../park/Park';
 import { Ragdoll, type RagdollSpawn } from './Ragdoll';
 
 let rapierReady: Promise<void> | null = null;
@@ -16,6 +16,14 @@ export function initRapier(): Promise<void> {
 const GROUP_SNOW = 0x0001;
 const GROUP_OBSTACLE = 0x0002;
 const GROUP_SKIER = 0x0004;
+/**
+ * Solid for the crash ragdoll only: corridor safety nets and rail pipes. Riding, grinding and the riding
+ * obstacle query are unaffected (grinding is analytic; the obstacle query filters on GROUP_OBSTACLE).
+ */
+const GROUP_RAGDOLL_SOLID = 0x0008;
+
+/** Rail pipe radius (matches the rendered tube in ParkMeshes). */
+const RAIL_PIPE_RADIUS = 0.035;
 
 function groups(membership: number, filter: number): number {
   return ((membership & 0xffff) << 16) | (filter & 0xffff);
@@ -44,12 +52,17 @@ export class PhysicsWorld {
     this.skierShape = new RAPIER.Capsule(0.5, 0.26);
     this.buildSnowCollider(park);
     this.buildObstacles(park);
+    this.buildFences(park);
     // Rapier 0.19 scene queries run on the broad-phase BVH, which is only built by a world step: without
     // this, `checkObstacleHit` sees no obstacle until the first crash has stepped the world. The world has
     // no dynamic bodies yet, so this step only builds the query structures.
     this.world.step();
-    // Skier parts collide with the snow and obstacles only, never with each other.
-    this.ragdoll = new Ragdoll(this.world, park.surface, groups(GROUP_SKIER, GROUP_SNOW | GROUP_OBSTACLE));
+    // Skier parts collide with the snow, obstacles and nets only, never with each other.
+    this.ragdoll = new Ragdoll(
+      this.world,
+      park.surface,
+      groups(GROUP_SKIER, GROUP_SNOW | GROUP_OBSTACLE | GROUP_RAGDOLL_SOLID),
+    );
   }
 
   static async create(park: Park): Promise<PhysicsWorld> {
@@ -141,6 +154,30 @@ export class PhysicsWorld {
         const c = this.world.createCollider(desc);
         this.obstacleKinds.set(c.handle, 'support');
       }
+      if (rail.kind === 'rail') {
+        // The pipe itself: a bailing body falls against / off it instead of lying through it.
+        const pts = rail.path.points;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i];
+          const b = pts[i + 1];
+          dir.subVectors(b, a);
+          const len = dir.length();
+          if (len < 0.05) continue;
+          dir.normalize();
+          // Rapier capsules lie along +Y.
+          q.setFromUnitVectors(up, dir);
+          // The path is the pipe's top line; the rendered pipe (radius 0.035) sits one radius below it.
+          const center = new Vector3().addVectors(a, b).multiplyScalar(0.5);
+          center.y -= RAIL_PIPE_RADIUS;
+          const desc = RAPIER.ColliderDesc.capsule(len / 2, RAIL_PIPE_RADIUS)
+            .setTranslation(center.x, center.y, center.z)
+            .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+            .setFriction(0.15)
+            .setRestitution(0.05)
+            .setCollisionGroups(groups(GROUP_RAGDOLL_SOLID, GROUP_SKIER));
+          this.world.createCollider(desc);
+        }
+      }
       if (rail.kind === 'box') {
         // Box body below the sliding surface, one cuboid per path segment.
         const pts = rail.path.points;
@@ -162,6 +199,38 @@ export class PhysicsWorld {
           const c = this.world.createCollider(desc);
           this.obstacleKinds.set(c.handle, 'box');
         }
+      }
+    }
+  }
+
+  /**
+   * Corridor safety nets (same layout as the rendered fences): one thin panel per post span, following the
+   * snow. Only the crash ragdoll collides with them, so a body thrown sideways is caught by the net instead of
+   * sliding through it and being pulled back inside on recovery.
+   */
+  private buildFences(park: Park): void {
+    const half = park.config.terrain.halfWidth - FENCE_INSET;
+    const len = park.config.terrain.length;
+    const a = new Vector3();
+    const b = new Vector3();
+    const q = new Quaternion();
+    const fwd = new Vector3(0, 0, 1);
+    const d = new Vector3();
+    for (const side of [-1, 1]) {
+      const x = side * half;
+      for (let z = FENCE_START; z + FENCE_SPACING < len; z += FENCE_SPACING) {
+        a.set(x, park.terrain.height(x, z), z);
+        b.set(x, park.terrain.height(x, z + FENCE_SPACING), z + FENCE_SPACING);
+        d.subVectors(b, a);
+        const spanLen = d.length();
+        q.setFromUnitVectors(fwd, d.divideScalar(spanLen));
+        const desc = RAPIER.ColliderDesc.cuboid(0.04, FENCE_HEIGHT / 2, spanLen / 2)
+          .setTranslation((a.x + b.x) / 2, (a.y + b.y) / 2 + FENCE_HEIGHT / 2, (a.z + b.z) / 2)
+          .setRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+          .setFriction(0.3)
+          .setRestitution(0.05)
+          .setCollisionGroups(groups(GROUP_RAGDOLL_SOLID, GROUP_SKIER));
+        this.world.createCollider(desc);
       }
     }
   }

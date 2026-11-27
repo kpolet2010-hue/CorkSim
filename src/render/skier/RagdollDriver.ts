@@ -50,8 +50,12 @@ export function createSkierRagdollPose(): SkierRagdollPose {
 
 /** Blend from the last animated pose into the ragdoll (s). */
 export const RAGDOLL_BLEND_IN = 0.1;
-/** World-space get-up blend from the last ragdoll pose to the animated recovery pose (s). */
-export const GETUP_TIME = 0.8;
+/**
+ * World-space get-up blend from the last ragdoll pose to the animated recovery pose (s). Lying to crouched
+ * turns some bones by up to a half turn; a real skier takes about 1.5 s to get up from the snow, and a
+ * shorter blend reads as a snap (most of a smoothstep happens in its middle third).
+ */
+export const GETUP_TIME = 1.5;
 /** Slide carried into the get-up: the frozen pose keeps the pelvis velocity, decaying with this tau (s). */
 const GETUP_SLIDE_TAU = 0.08;
 
@@ -65,18 +69,21 @@ const enum Group {
   Arm,
   Leg,
 }
-/** [delay, duration] of each group's get-up blend (s). All end by GETUP_TIME. */
+/**
+ * [delay, duration] of each group's get-up blend (s). All end by GETUP_TIME. Arms reach down and push
+ * first, the legs pull the skis under the body, then the torso comes up over them.
+ */
 const GETUP_TIMING: readonly (readonly [number, number])[] = [
-  [0.14, GETUP_TIME - 0.14],
-  [0, 0.5],
-  [0, 0.6],
+  [0.35, GETUP_TIME - 0.35],
+  [0, 0.95],
+  [0.1, 1.05],
 ];
 /** Largest ground-clamp lift (m): the body is pushed up, never thrown into the air. */
 const GETUP_MAX_LIFT = 0.3;
 /** Largest ground-clamp lift speed (m/s). */
 const GETUP_LIFT_SPEED = 1.5;
 /** The pelvis rises with the torso. */
-const GETUP_PELVIS: readonly [number, number] = [0.14, GETUP_TIME - 0.14];
+const GETUP_PELVIS: readonly [number, number] = [0.35, GETUP_TIME - 0.35];
 /** Contact points kept above the snow during the get-up: [bone, local x, y, z, radius]. */
 type Probe = readonly [keyof ProbeBones, number, number, number, number];
 interface ProbeBones {

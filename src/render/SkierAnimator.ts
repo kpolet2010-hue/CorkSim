@@ -162,7 +162,7 @@ const PALM = 0.065;
 /** Grab point height above the ski base (top sheet + glove thickness). */
 const GRAB_HEIGHT = 0.05;
 /** After a crash the recovery crouch holds while the get-up blend lands in it, then stands up (s). */
-const RECOVER_HOLD = GETUP_TIME * 0.6;
+const RECOVER_HOLD = GETUP_TIME * 0.8;
 
 // Switch look-back: the yaw needed to see the direction of travel, spread from the hips to the head.
 /** Pelvis opening towards the look side (rad). */

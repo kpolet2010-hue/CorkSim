@@ -85,6 +85,31 @@ displayed chain never stretches.
   from the last animated pose over about 0.1 s (no snap). Blend out through the get-up transition.
 - The old `buildCrash` noise layer and the tumble capsule are removed.
 
+## 2.6 Session 4 revisions (2026-11-26, from the recordings)
+
+Found by recording the committed ragdoll (`b237d7e`) and measuring it headlessly (pelvis height, knee
+angles, settle criteria per step) before changing anything:
+
+| Problem seen | Cause | Change |
+| --- | --- | --- |
+| Forward fall stands stiff-legged for ~0.5 s with the torso hanging down (a pike), then topples sideways | The ski is flat and rigid with the shin, so the shin angle is fixed. Anything that moves the feet back relative to the hips (the forward trip pushed the legs back) swings the thigh to vertical and locks the knee at its 0° stop. On a straight knee gravity acts along the leg and can never buckle it, and the long skis make the pose statically stable. | Forward trip 0 with the skis on the snow (`groundTripScale.forward`): the athletic stance already leans forward, so gravity tips the body over the skis, the knees buckle, the hands catch and the chest goes down. Knee hinge minimum `kneeMin` = 12° (a falling skier's knees never lock out). Tested: a trip at the ski tip or on the shins only still locked the knees. |
+| Big Air crashes (and g4) recover at the 5.5 s cap while still sliding | On steep landings plough drag alone gives a terminal slide of ~1.5 m/s, above the 0.8 m/s settle speed | **Self-arrest**: a bounded Coulomb-like deceleration (3.5 m/s²) of the tangential velocity of touching segments, ramped in after 0.5 s **on the snow** (air time after a jump crash does not count). Never reverses a velocity; holds a stopped body on a slope. |
+| Pelvis hitch of ~v·dt at crash entry | Spawn set `prev = current`, so the first interpolated step stalls | The spawn is treated as the end of a step: `prev = position − v·dt`, rotation − ω·dt (`RagdollSpawn.dt`). |
+| Get-up snaps from lying to standing in ~0.25 s, arms flung wide | 0.5–0.8 s smoothstep blends turning bones by up to a half turn | `GETUP_TIME` 0.8 → 1.5 s, staggered: arms 0–0.95 s, legs 0.1–1.15 s, torso and pelvis 0.35–1.5 s. Recovery crouch hold `GETUP_TIME × 0.8`. |
+| g6: after a tree crash off-piste the skier is teleported back through the net on recovery; the camera loses them | Nets and rail pipes had no colliders; `recover()` clamped x to `halfWidth − 3` | Nets (`FENCE_*` in `Park.ts`, shared with the renderer) and rail pipes are colliders in `GROUP_RAGDOLL_SOLID`, solid for the ragdoll only (riding, grinding and the obstacle query are unchanged). `recover()` keeps the skier on the side of the net they lie on. |
+| g5: body lies through the rail after a bail | Same: rail pipes were not solid | Rail pipe capsules (radius 0.035, one radius below the path's top line, as rendered). |
+| Head-first landing sinks 0.19 m into the snow (Simulation test) | Forward trip 0 also applied to landing crashes | `tripSpeed` back to 2.8 for every kind (landing crashes × `landingTripScale`); `groundTripScale` {1, 1, 0} applies only with the skis on the snow, so ground forward falls have no trip. |
+| Backward fall unreadable: from straight behind, a body lying along the slide shows only two boots | Crash camera yaw = slide direction | **Three-quarter orbit**: the crash yaw target is the slide direction ± 38° (on the side the camera already is), faded in as the slide slows below 9 → 4 m/s (at speed it stays behind to track). Look-down 20° → 24°. |
+
+Regression tests: forward fall buckles the knees and goes down (no pike); knees never lock; self-arrest on a
+24° slope settles before the cap; a body sliding into the edge is caught by the net and gets up where it lies;
+a body falling onto a rail does not pass through the pipe; spawn `prev` is one rigid-motion step back; camera
+reaches the 3/4 view as the slide slows with the body framed. Each new physics test fails on the previous
+implementation.
+
+Still open (session 4): b4 (XL backflip, ~70 km/h) ends at the 5.5 s cap with the body nearly stopped; the arms
+trail at the shoulder limit while sliding on the back (symmetric, still); no binding release.
+
 ## 3. Work split
 
 1. **Physics** (`physics-simulation-engineer`): `src/physics/Ragdoll.ts` (new), `PhysicsWorld.ts`,

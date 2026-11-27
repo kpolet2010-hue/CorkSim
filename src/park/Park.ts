@@ -6,6 +6,16 @@ import { SurfaceField } from './SurfaceField';
 import { KickerLanding, KickerTakeoff, Ramp, Roller, type SurfaceFeature } from './SurfaceFeatures';
 import type { KickerConfig, ParkConfig, RailObstacleConfig, RailShape } from './types';
 
+/**
+ * Safety nets along both corridor edges: at |x| = halfWidth − FENCE_INSET, posts every FENCE_SPACING m from
+ * z = FENCE_START to the course length, FENCE_HEIGHT m tall. Rendered by ParkMeshes; solid only for the crash
+ * ragdoll (PhysicsWorld), so a sliding body is caught by the net instead of passing through it.
+ */
+export const FENCE_INSET = 1.5;
+export const FENCE_START = 20;
+export const FENCE_SPACING = 4;
+export const FENCE_HEIGHT = 1.25;
+
 export interface Kicker {
   config: KickerConfig;
   takeoff: KickerTakeoff;

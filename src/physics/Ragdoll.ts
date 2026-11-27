@@ -224,6 +224,12 @@ export interface RagdollSpawn {
   /** Loss-of-balance trip: legs gain `tripSpeed` relative to the torso along `tripDirection` (unit). */
   tripDirection: Vector3;
   tripSpeed: number;
+  /**
+   * Fixed step (s). The spawned state counts as the result of a step: `prev*` is set one step back along
+   * the rigid motion (position − v·dt, rotation − ω·dt), so render interpolation continues the skier's
+   * motion through the crash entry instead of stalling for one step. 0 / absent: prev = current.
+   */
+  dt?: number;
 }
 
 const _q = new Quaternion();
@@ -342,6 +348,8 @@ export class Ragdoll {
   private tripDvTorso = 0;
   private tripLeft = 0;
   private _time = 0;
+  /** Time any segment has touched the snow since the spawn (drives the self-arrest ramp). */
+  private snowTime = 0;
   private _active = false;
   /** Stance positions/rotations in the skier root frame (scratch, reused). */
   private readonly stancePos: Vector3[] = [];
@@ -402,6 +410,7 @@ export class Ragdoll {
     this.despawn();
     this.cfg = cfg;
     this._time = 0;
+    this.snowTime = 0;
     this.buildStance(cfg);
     this.buildProbes(cfg);
 
@@ -462,6 +471,21 @@ export class Ragdoll {
       body.setAngvel(_vec, true);
       this.segs[i].velocity.copy(_v2);
       this.segs[i].angularVelocity.copy(s.angularVelocity);
+    }
+    // Render continuity: the spawn state is the end of a step that started one rigid-motion step earlier
+    // (the trip is not included: it has not acted yet).
+    const dt = s.dt ?? 0;
+    if (dt > 0) {
+      const wLen = s.angularVelocity.length();
+      if (wLen > 1e-9) _q.setFromAxisAngle(_v3.copy(s.angularVelocity).divideScalar(wLen), -wLen * dt);
+      else _q.identity();
+      for (const seg of this.segs) {
+        // Origin velocity of the rigid motion about the root: v + ω × r.
+        _v.copy(seg.position).sub(s.rootPosition);
+        _v2.copy(s.angularVelocity).cross(_v).add(s.velocity);
+        seg.prevPosition.copy(seg.position).addScaledVector(_v2, -dt);
+        seg.prevQuaternion.copy(_q).multiply(seg.quaternion).normalize();
+      }
     }
     this._active = true;
   }
@@ -527,17 +551,27 @@ export class Ragdoll {
     // Snow: ploughing drag on the tangential velocity and rolling resistance of touching segments.
     const plough = Math.min(0.5, c.ploughDrag * dt);
     const roll = Math.min(0.5, c.contactAngularDamping * dt);
+    // Self-arrest: a bounded velocity change per step (Coulomb-like), ramped in once the body has been on
+    // the snow for a while (time in the air does not count: there is nothing to dig into).
+    const arrest =
+      c.selfArrestDecel *
+      Math.min(1, Math.max(0, (this.snowTime - c.selfArrestDelay) / Math.max(1e-3, c.selfArrestRamp))) *
+      dt;
+    let anyContact = false;
     for (let i = 0; i < SEGMENT_COUNT; i++) {
       const seg = this.segs[i];
       const touching = this.segmentTouching(i, c.contactMargin);
       seg.snowContact = touching;
       if (!touching) continue;
+      anyContact = true;
       const body = this.bodies[i]!;
       const m = this.masses[i];
       const n = _sample.normal;
-      _v.copy(seg.velocity)
-        .addScaledVector(n, -seg.velocity.dot(n))
-        .multiplyScalar(-m * plough);
+      _v.copy(seg.velocity).addScaledVector(n, -seg.velocity.dot(n));
+      const vt = _v.length();
+      // Plough drag (viscous) plus self-arrest (bounded, never past a stop).
+      const dv = vt * plough + Math.min(vt * (1 - plough), arrest);
+      _v.multiplyScalar(vt > 1e-9 ? (-m * dv) / vt : 0);
       _vec.x = _v.x;
       _vec.y = _v.y;
       _vec.z = _v.z;
@@ -548,6 +582,7 @@ export class Ragdoll {
       _vec.z = _v.z;
       body.applyTorqueImpulse(_vec, true);
     }
+    if (anyContact) this.snowTime += dt;
   }
 
   /** Applies this step's share of the trip impulse pair (sums to zero over all segments). */
@@ -807,7 +842,7 @@ export class Ragdoll {
         target: quatFromRotVec(target, info.side, new Quaternion()),
       });
     };
-    const hinge = (child: number, axisSign: number, max: number, target: number) => {
+    const hinge = (child: number, axisSign: number, min: number, max: number, target: number) => {
       const info = RAGDOLL_SEGMENT_INFO[child];
       const jd = RAPIER.JointData.revolute(info.origin, { x: 0, y: 0, z: 0 }, { x: axisSign, y: 0, z: 0 });
       const j = this.world.createImpulseJoint(
@@ -818,7 +853,7 @@ export class Ragdoll {
       ) as RAPIER.RevoluteImpulseJoint;
       j.setContactsEnabled(false);
       // JointData.limits is ignored for revolute joints in rapier3d-compat 0.19: set them on the joint.
-      j.setLimits(0, max);
+      j.setLimits(min, max);
       j.configureMotorModel(RAPIER.MotorModel.AccelerationBased);
       this.hinges.push({ joint: j, target });
     };
@@ -831,10 +866,10 @@ export class Ragdoll {
     ball(SEG.thighL, cfg.hip, tp.hip, sl.hip);
     ball(SEG.thighR, cfg.hip, tp.hip, sl.hip);
     // Knee: + rotation about X swings the shin backwards. Elbow: flexion is about -X.
-    hinge(SEG.shinL, 1, cfg.kneeMax, tp.knee);
-    hinge(SEG.shinR, 1, cfg.kneeMax, tp.knee);
-    hinge(SEG.forearmL, -1, cfg.elbowMax, tp.elbow);
-    hinge(SEG.forearmR, -1, cfg.elbowMax, tp.elbow);
+    hinge(SEG.shinL, 1, cfg.kneeMin, cfg.kneeMax, tp.knee);
+    hinge(SEG.shinR, 1, cfg.kneeMin, cfg.kneeMax, tp.knee);
+    hinge(SEG.forearmL, -1, 0, cfg.elbowMax, tp.elbow);
+    hinge(SEG.forearmR, -1, 0, cfg.elbowMax, tp.elbow);
   }
 
   /**

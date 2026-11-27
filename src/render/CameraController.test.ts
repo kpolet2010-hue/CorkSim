@@ -217,6 +217,40 @@ describe('CameraController crash framing', () => {
     expect(cam.position.distanceTo(t.body.centre)).toBeLessThan(SETTINGS.distance + 1.5);
   });
 
+  it('swings to a three-quarter view of the body as the slide slows, keeping it framed', () => {
+    const { ctl, cam } = makeCamera(slope);
+    const t = makeTarget();
+    const dt = 1 / 60;
+    t.velocity.set(0, -10 * SLOPE, 10);
+    ctl.snap(t);
+    t.crashed = true;
+    t.body.centre.set(0, 0.3, 0);
+    let maxYawRate = 0;
+    let prevYaw = horizontalYaw(cam);
+    let yawAtSpeed = 0;
+    for (let c = 0; c < 6; c += dt) {
+      const speed = Math.max(0, 10 - 4 * c);
+      t.body.velocity.set(0, -speed * SLOPE, speed);
+      t.body.centre.addScaledVector(t.body.velocity, dt);
+      t.body.centre.y = slope(0, t.body.centre.z) + 0.3;
+      t.position.copy(t.body.centre);
+      t.velocity.copy(t.body.velocity);
+      ctl.update(t, dt);
+      if (c < 0.5) yawAtSpeed = Math.max(yawAtSpeed, Math.abs(horizontalYaw(cam)));
+      maxYawRate = Math.max(maxYawRate, Math.abs(wrap(horizontalYaw(cam) - prevYaw)) / dt);
+      prevYaw = horizontalYaw(cam);
+    }
+    // Behind the body while it slides fast, then about 38° off the slide line once it is slow.
+    expect(yawAtSpeed).toBeLessThan(0.15);
+    const off = Math.abs(horizontalYaw(cam));
+    expect(off).toBeGreaterThan(CRASH_CAMERA.orbitAngle * 0.8);
+    expect(off).toBeLessThan(CRASH_CAMERA.orbitAngle * 1.2);
+    expect(maxYawRate).toBeLessThan(CRASH_CAMERA.maxYawSpeed + 0.35);
+    const p = ndc(cam, t.body.centre);
+    expect(Math.abs(p.x)).toBeLessThan(0.35);
+    expect(Math.abs(p.y)).toBeLessThan(0.35);
+  });
+
   it('does not run into the body when it stops dead (tree impact)', () => {
     const { ctl, cam } = makeCamera(slope);
     const t = makeTarget();

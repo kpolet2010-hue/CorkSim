@@ -1,6 +1,6 @@
 import { PerspectiveCamera, Vector3 } from 'three';
 import type { CameraSettings } from '../config/settings';
-import { DEG2RAD, clamp, dampFactor, lerp, wrapAngle } from '../core/math';
+import { DEG2RAD, clamp, dampFactor, lerp, smoothstep, wrapAngle } from '../core/math';
 import type { SurfaceField } from '../park/SurfaceField';
 
 export type CameraMode = 'chase' | 'far' | 'side';
@@ -57,8 +57,19 @@ export const CRASH_CAMERA = {
   sphereMargin: 1.4,
   /** Maximum distance beyond the configured riding distance (m). */
   maxExtraDistance: 3,
-  /** Camera height above the body centre per metre of distance (tan of the look-down angle, ~20°). */
-  elevation: 0.36,
+  /** Camera height above the body centre per metre of distance (tan of the look-down angle, ~24°). */
+  elevation: 0.45,
+  /**
+   * Three-quarter view: the crash yaw target is the slide direction plus this angle (rad, ~38°), on the side
+   * the camera already is. Straight from behind, a body lying along the slide is foreshortened to a blob
+   * (a backward fall shows only two boots); from the side its posture reads. Reached through the normal
+   * damped, speed-capped yaw drift and kept after the body stops. Faded in as the slide slows (full below
+   * `orbitFullSpeed`, none above `orbitNoneSpeed`, m/s): at speed the camera stays behind to track, and
+   * orbiting a fast slide would add whip.
+   */
+  orbitAngle: 0.66,
+  orbitFullSpeed: 4,
+  orbitNoneSpeed: 9,
   /**
    * Smoothing of the framed body centre and the fitted distance (1/s); the centre and, during a crash,
    * the camera itself are velocity feed-forwarded so a sliding body is not left behind.
@@ -162,6 +173,10 @@ export class CameraController {
   private fitDistance = 0;
   /** Smoothed body (or skier) velocity for the crash framing. */
   private readonly crashVel = new Vector3();
+  /** Crash three-quarter orbit: active for the current crash, last slide yaw, and the side (+1 / -1). */
+  private orbitActive = false;
+  private slideYaw = 0;
+  private orbitSide = 1;
 
   constructor(
     camera: PerspectiveCamera,
@@ -320,9 +335,21 @@ export class CameraController {
     const hv = Math.hypot(vel.x, vel.z);
     let targetYaw = this.yaw;
     if (t.crashed) {
-      if (body && hv > C.minSlideSpeed) targetYaw = Math.atan2(vel.x, vel.z);
+      // Three-quarter orbit around the slide direction; the side is chosen once, at the crash entry.
+      if (!this.orbitActive) {
+        this.orbitActive = true;
+        this.slideYaw = hv > C.minSlideSpeed ? Math.atan2(vel.x, vel.z) : this.yaw;
+        const rel = wrapAngle(this.yaw - this.slideYaw);
+        this.orbitSide = rel < -1e-3 ? -1 : 1;
+      }
+      if (body && hv > C.minSlideSpeed) this.slideYaw = Math.atan2(vel.x, vel.z);
+      if (body) {
+        const o = 1 - smoothstep(C.orbitFullSpeed, C.orbitNoneSpeed, vel.length());
+        targetYaw = wrapAngle(this.slideYaw + this.orbitSide * C.orbitAngle * o);
+      }
     } else if (hv > 1.2) targetYaw = Math.atan2(vel.x, vel.z);
     else targetYaw = Math.atan2(t.heading.x, t.heading.z);
+    if (!t.crashed) this.orbitActive = false;
     this.airBlend = lerp(this.airBlend, t.airborne ? 1 : 0, dampFactor(3, dt));
     if (!this.initialized) {
       this.yaw = targetYaw;

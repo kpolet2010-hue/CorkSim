@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FallKind } from '../config/physicsConfig';
 import { ControlInput } from '../input/actions';
 import { createSurfaceSample } from '../park/SurfaceField';
+import { FENCE_INSET } from '../park/Park';
 import { BODY } from '../player/bodyDimensions';
 import { STATE_TRANSITIONS } from '../player/PlayerState';
 import { Simulation } from '../sim/Simulation';
@@ -132,12 +133,19 @@ describe('Crash ragdoll', () => {
     const gap = sim.physics.ragdoll.minProbeGap();
     expect(gap).toBeGreaterThan(-0.002);
     expect(gap).toBeLessThan(0.012);
-    // Chain connected at spawn and prev = current.
+    // Chain connected at spawn; prev is one rigid-motion step back (render interpolation continues the
+    // skier's motion through the crash entry: no one-step stall of ~v·dt).
     expect(maxJointSeparation(rd)).toBeLessThan(1e-6);
+    const dt = sim.dt;
     for (const s of rd.segments) {
-      expect(s.prevPosition.equals(s.position)).toBe(true);
-      expect(s.prevQuaternion.equals(s.quaternion)).toBe(true);
+      const moved = s.position.clone().sub(s.prevPosition);
+      expect(moved.distanceTo(s.velocity.clone().multiplyScalar(dt))).toBeLessThan(2e-3);
+      expect(s.prevQuaternion.angleTo(s.quaternion)).toBeLessThan(0.02);
     }
+    expect(rd.segments[SEG.pelvis].position.distanceTo(rd.segments[SEG.pelvis].prevPosition)).toBeCloseTo(
+      12 * dt,
+      1,
+    );
     // Knees bent forward (positive about +X), elbows flexed.
     expect(hingeAngle(rd, SEG.shinL, 1)).toBeGreaterThan(0.5);
     expect(hingeAngle(rd, SEG.forearmR, -1)).toBeGreaterThan(0.5);
@@ -222,6 +230,127 @@ describe('Crash ragdoll', () => {
       if (rd && rd.segments[SEG.pelvis].velocity.length() > 3) fastUntil = i * sim.dt;
     }
     expect(fastUntil).toBeGreaterThan(0.8);
+  });
+
+  it('a forward fall buckles the knees and goes down (no stiff-legged pike standing on the skis)', async () => {
+    const sim = await fallingSkier('forward', 12);
+    const input = new ControlInput();
+    const c = sim.cfg.crash;
+    let maxKnee = 0;
+    let pikeTime = 0;
+    let pelvisLowAt = -1;
+    for (let i = 1; i <= 120 && sim.player.ragdoll; i++) {
+      sim.step(input);
+      const rd = sim.player.ragdoll;
+      if (!rd) break;
+      const t = i * sim.dt;
+      const knee = Math.min(hingeAngle(rd, SEG.shinL, 1), hingeAngle(rd, SEG.shinR, 1));
+      maxKnee = Math.max(maxKnee, knee);
+      const pel = rd.segments[SEG.pelvis].position;
+      const h = pel.y - sim.park.surface.height(pel.x, pel.z);
+      // Pike: hips at standing height on (nearly) straight knees.
+      if (t > 0.3 && h > 0.8 && knee < c.kneeMin + 0.15) pikeTime += sim.dt;
+      if (pelvisLowAt < 0 && h < 0.6) pelvisLowAt = t;
+    }
+    expect(maxKnee).toBeGreaterThan(1.5);
+    expect(pikeTime).toBeLessThan(0.15);
+    expect(pelvisLowAt).toBeGreaterThan(0);
+    expect(pelvisLowAt).toBeLessThan(1.2);
+  });
+
+  it('knees never lock fully straight (hinge minimum)', async () => {
+    const sim = await fallingSkier('forward', 12);
+    const input = new ControlInput();
+    const c = sim.cfg.crash;
+    expect(c.kneeMin).toBeGreaterThan(0);
+    let minKnee = Infinity;
+    for (let i = 0; i < 180 && sim.player.ragdoll; i++) {
+      sim.step(input);
+      const rd = sim.player.ragdoll;
+      if (rd) minKnee = Math.min(minKnee, hingeAngle(rd, SEG.shinL, 1), hingeAngle(rd, SEG.shinR, 1));
+    }
+    expect(minKnee).toBeGreaterThan(c.kneeMin - 0.05);
+  });
+
+  it('self-arrest: a body on a steep slope comes to rest by itself, not by the time cap', async () => {
+    const sim = await fallingSkier('backward', 12, 1, 24);
+    const run = runCrash(sim);
+    const c = sim.cfg.crash;
+    expect(run.recovered).toBe(true);
+    expect(run.settledAt).toBeGreaterThan(0);
+    expect(run.duration).toBeLessThan(c.maxTumbleTime);
+  });
+
+  it('a body sliding into the corridor edge is caught by the safety net and gets up where it lies', async () => {
+    const sim = await create(12);
+    const input = new ControlInput();
+    const net = sim.park.config.terrain.halfWidth - FENCE_INSET;
+    // Riding across the slope straight at the +x net, then falling.
+    sim.teleport(net - 4, 60, 11, 90);
+    sim.step(input);
+    expect(sim.player.debugFall('forward')).toBe(true);
+    let maxX = -Infinity;
+    let lastX = 0;
+    for (let i = 0; i < 600 && sim.player.ragdoll; i++) {
+      sim.step(input);
+      const rd = sim.player.ragdoll;
+      if (!rd) break;
+      for (const s of rd.segments) maxX = Math.max(maxX, s.position.x);
+      lastX = rd.segments[SEG.pelvis].position.x;
+    }
+    expect(sim.player.state).toBe('IDLE');
+    // Segment origins stay on the course side of the net (allowing for limb radius at the joints).
+    expect(maxX).toBeLessThan(net + 0.15);
+    // Recovered next to where the body lay (no pull back into the corridor).
+    expect(Math.abs(sim.player.body.position.x - lastX)).toBeLessThan(0.8);
+  });
+
+  it('a body falling onto a rail rests against the pipe instead of passing through it', async () => {
+    const sim = await create(10, {
+      rails: [
+        {
+          id: 'r',
+          kind: 'rail',
+          shape: 'straight',
+          points: [
+            [0, 0.6, 40],
+            [0, 0.6, 90],
+          ],
+        },
+      ],
+    });
+    const input = new ControlInput();
+    // Riding beside the rail (it is on the skier's right), then falling to the right, across it.
+    sim.teleport(0.25, 45, 7);
+    sim.step(input);
+    expect(sim.player.debugFall('side', -1)).toBe(true);
+    const pts = sim.park.rails[0].path.points;
+    const a = pts[0];
+    const b = pts[pts.length - 1];
+    const axisDist = (p: Vector3) => {
+      // Distance from the pipe's centre line (one pipe radius below the top line).
+      const ab = b.clone().sub(a);
+      const t = Math.min(1, Math.max(0, p.clone().sub(a).dot(ab) / ab.lengthSq()));
+      const c = a.clone().addScaledVector(ab, t);
+      c.y -= 0.035;
+      return p.distanceTo(c);
+    };
+    let minTorso = Infinity;
+    for (let i = 0; i < 240 && sim.player.ragdoll; i++) {
+      sim.step(input);
+      const rd = sim.player.ragdoll;
+      if (!rd) break;
+      // Torso centres: pelvis box centre and chest box centre (segment frames, +Y up the bone).
+      const pel = rd.segments[SEG.pelvis];
+      const ch = rd.segments[SEG.chest];
+      const pc = new Vector3(0, -0.02, 0).applyQuaternion(pel.quaternion).add(pel.position);
+      const cc = new Vector3(0, 0.24, 0).applyQuaternion(ch.quaternion).add(ch.position);
+      minTorso = Math.min(minTorso, axisDist(pc), axisDist(cc));
+    }
+    // The body reached the rail (the test is meaningful) but no torso centre went into the pipe: the torso
+    // boxes are 0.07 m deep plus 0.03 m rounding, the pipe 0.035 m in radius.
+    expect(minTorso).toBeLessThan(0.5);
+    expect(minTorso).toBeGreaterThan(0.08);
   });
 
   it('pelvis rotation dies out (no continuous spinning)', async () => {

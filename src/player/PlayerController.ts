@@ -4,7 +4,7 @@ import type { EventBus } from '../core/EventBus';
 import { RAD2DEG, clamp, isFiniteQuaternion, isFiniteVector, quaternionFromForwardUp } from '../core/math';
 import type { ControlInput } from '../input/actions';
 import { evaluateLanding, type LandingResult } from '../landing/LandingEvaluator';
-import type { Park } from '../park/Park';
+import { FENCE_INSET, type Park } from '../park/Park';
 import { createSurfaceSample } from '../park/SurfaceField';
 import type { SurfaceType } from '../park/SurfaceFeatures';
 import {
@@ -665,7 +665,9 @@ export class PlayerController {
       if (dir.lengthSq() < 1e-6) dir.crossVectors(n, travel);
       dir.normalize().multiplyScalar(-side);
     }
-    const scale = fall?.tripScale ?? 1;
+    // Landing crashes carry their own scale; otherwise the skis are on the snow (ground fall, rail bail,
+    // obstacle).
+    const scale = fall?.tripScale ?? c.groundTripScale[kind];
     this.physics.startRagdoll(c, this.cfg.physics.mass, {
       rootPosition: root,
       rootOrientation: b.orientation,
@@ -673,6 +675,7 @@ export class PlayerController {
       angularVelocity: b.angularVelocity,
       tripDirection: dir,
       tripSpeed: c.tripSpeed[kind] * scale,
+      dt: this.cfg.fixedTimestep,
     });
     this.syncBodyFromRagdoll();
     this.events.emit('crash', { reason, impactSpeed });
@@ -755,7 +758,13 @@ export class PlayerController {
     const rd = this.physics.ragdoll;
     const from = rd.active ? rd.view.segments[SEG.pelvis].position : b.position;
     const pos = _tmp2.copy(isFiniteVector(from) ? from : this.park.spawnPosition(new Vector3()));
-    pos.x = clamp(pos.x, -half + 3, half - 3);
+    // Get up on the side of the safety net the body lies on (never moved across it): inside the corridor
+    // just clear of the net, or off-piste (riding there is allowed) clear of the net and within the snow.
+    const net = half - FENCE_INSET;
+    const ax = Math.abs(pos.x);
+    const sx = pos.x < 0 ? -1 : 1;
+    if (ax < net) pos.x = sx * Math.min(ax, net - 0.7);
+    else pos.x = sx * clamp(ax, net + 0.7, half + 25);
     // Avoid recovering on top of a feature or rail: step down the hill until clear.
     for (let i = 0; i < 40 && this.park.surface.featureOffset(pos.x, pos.z) > 0.05; i++) pos.z += 1.5;
     this.physics.endRagdoll();

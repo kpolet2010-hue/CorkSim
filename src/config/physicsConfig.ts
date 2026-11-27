@@ -197,6 +197,11 @@ export interface CrashConfig {
   tripSpeed: Record<FallKind, number>;
   /** Time over which the trip impulse pair is applied (s); 0 = instantly at the crash. */
   tripDuration: number;
+  /**
+   * Trip scale for falls with the skis on the snow (ground falls, rail bails, obstacle hits), per kind.
+   * Landing crashes use `landingTripScale` instead.
+   */
+  groundTripScale: Record<FallKind, number>;
   /** Trip scale for landing crashes (the touchdown itself already unbalances the body). */
   landingTripScale: number;
   /** Segment masses for a 75 kg skier (kg); scaled to `physics.mass`. Shin includes boot and ski. */
@@ -217,6 +222,16 @@ export interface CrashConfig {
   ploughDrag: number;
   /** Extra angular damping of segments touching the snow (rolling resistance, 1/s). */
   contactAngularDamping: number;
+  /**
+   * Self-arrest: once the first tumble is over, the limp body digs heels, elbows and hands in. A bounded
+   * Coulomb-like deceleration (m/s²) of the tangential velocity of segments touching the snow, ramped in
+   * from `selfArrestDelay` over `selfArrestRamp` (s) of time on the snow (time in the air after a jump crash
+   * does not count). It never reverses a velocity, and it holds a body
+   * that has stopped on a slope (without it a body on a steep landing slides at ~1.5 m/s forever).
+   */
+  selfArrestDecel: number;
+  selfArrestDelay: number;
+  selfArrestRamp: number;
   /** Probe gap below which a segment counts as touching the snow (m). */
   contactMargin: number;
   /**
@@ -252,6 +267,12 @@ export interface CrashConfig {
   toneDecayTime: number;
   /** Knee and elbow ranges (rad, 0 = straight). */
   kneeMax: number;
+  /**
+   * Smallest knee bend (rad). A falling skier's knees never lock out: on a fully straight knee gravity acts
+   * along the leg and can never buckle it, so with the long flat skis as a base the body would stand
+   * stiff-legged (a pike) instead of collapsing.
+   */
+  kneeMin: number;
   elbowMax: number;
   waist: RagdollJointRange;
   neck: RagdollJointRange;
@@ -400,6 +421,11 @@ export const DEFAULT_GAMEPLAY_CONFIG: GameplayConfig = {
     settleFilterTime: 0.15,
     fallThroughDepth: 1.2,
     tripSpeed: { backward: 2.8, side: 2.8, forward: 2.8 },
+    // Forward with the skis on the snow: no trip. The athletic stance already leans forward, so gravity
+    // pitches the body over the skis; the knees buckle, the hands catch and the chest goes down. Any
+    // differential push that moves the feet back relative to the hips levers the knees straight against the
+    // flat, rigid skis instead (a stiff-legged pike that stands on the skis for over a second).
+    groundTripScale: { backward: 1, side: 1, forward: 0 },
     tripDuration: 0.12,
     landingTripScale: 0.6,
     segmentMass: {
@@ -421,6 +447,9 @@ export const DEFAULT_GAMEPLAY_CONFIG: GameplayConfig = {
     angularDamping: 0.8,
     ploughDrag: 0.6,
     contactAngularDamping: 5,
+    selfArrestDecel: 3.5,
+    selfArrestDelay: 0.5,
+    selfArrestRamp: 1,
     contactMargin: 0.05,
     solverLimits: { waist: true, neck: true, shoulder: true, hip: true },
     limitErp: 0.25,
@@ -435,6 +464,7 @@ export const DEFAULT_GAMEPLAY_CONFIG: GameplayConfig = {
     toneLimp: 0.08,
     toneDecayTime: 0.6,
     kneeMax: 150 * DEG,
+    kneeMin: 12 * DEG,
     elbowMax: 145 * DEG,
     waist: {
       swingXMin: -25 * DEG,
@@ -511,6 +541,7 @@ function cloneCrashConfig(c: CrashConfig): CrashConfig {
   return {
     ...c,
     tripSpeed: { ...c.tripSpeed },
+    groundTripScale: { ...c.groundTripScale },
     solverLimits: { ...c.solverLimits },
     segmentMass: { ...c.segmentMass },
     waist: { ...c.waist },
