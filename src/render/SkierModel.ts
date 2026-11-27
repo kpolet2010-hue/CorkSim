@@ -51,22 +51,37 @@ export interface SkierColors {
   gloves?: number;
   boots?: number;
   bootCuff?: number;
+  goggleFrame?: number;
+  /** Pole shaft and its graphic bands. */
+  pole?: number;
+  poleAccent?: number;
+  binding?: number;
 }
 
+/**
+ * Default outfit (user reference, 2026-11-27): white baggy jacket with a black/grey gradient chevron band,
+ * white baggy pants down to the skis, a smooth dark-blue helmet, large light-framed goggles with a blue
+ * mirrored lens, white gloves, pale ice-blue twin-tips, white/red poles. No third-party logos.
+ */
 export const DEFAULT_SKIER_COLORS: SkierColors = {
-  jacket: 0xf2762e,
-  jacketAccent: 0x27313d,
-  pants: 0x56603f,
-  helmet: 0xf1f2f0,
-  skiTop: 0x15b8c0,
-  skiAccent: 0xffcf3f,
-  trim: 0xf3ead6,
-  lens: 0xff9a3c,
-  gaiter: 0xb4bcc6,
-  gaiterAccent: 0x5f6b79,
-  gloves: 0x23272d,
-  boots: 0x2b3038,
-  bootCuff: 0x3b424d,
+  jacket: 0xeceef1,
+  jacketAccent: 0x1a1d22,
+  pants: 0xe8ebee,
+  helmet: 0x1b2a5c,
+  skiTop: 0xc3d5e2,
+  skiAccent: 0x7d98ad,
+  trim: 0xd3d8de,
+  lens: 0x2a5fd6,
+  gaiter: 0x2d3137,
+  gaiterAccent: 0x4b5159,
+  gloves: 0xf1f2f4,
+  // Light boots: whatever shows under the pant hem stays in the white outfit.
+  boots: 0xd9dde2,
+  bootCuff: 0xe6e9ec,
+  goggleFrame: 0xe6e9ec,
+  pole: 0xf3f4f6,
+  poleAccent: 0xd7262f,
+  binding: 0xe4e7ea,
 };
 
 export interface SkierModelStats {
@@ -149,21 +164,22 @@ export class SkierModel {
       trim: c.trim ?? 0xf3ead6,
       pants: c.pants,
       helmet: c.helmet,
-      goggleFrame: 0x1b1e23,
+      goggleFrame: c.goggleFrame ?? 0x1b1e23,
       lens: c.lens ?? 0xff9a3c,
       gaiter: c.gaiter ?? 0xb4bcc6,
       gaiterAccent: c.gaiterAccent ?? 0x5f6b79,
       gloves: c.gloves ?? 0x23272d,
       boots: c.boots ?? 0x2b3038,
       bootCuff: c.bootCuff ?? 0x3b424d,
-      binding: 0x2a2d32,
-      bindingAccent: c.skiAccent,
+      binding: c.binding ?? 0x2a2d32,
+      bindingAccent: 0x2a2d32,
       skiTop: c.skiTop,
       skiAccent: c.skiAccent,
       skiInk: 0x1a2130,
       skiBase: 0x16181c,
       skiSide: 0xd9dde2,
-      pole: 0xb9c0c8,
+      pole: c.pole ?? 0xb9c0c8,
+      poleAccent: c.poleAccent ?? c.skiAccent,
       skin: 0xd9a07f,
     };
 
@@ -200,7 +216,8 @@ export class SkierModel {
       roughness: 0.08,
       metalness: 0.9,
       emissive: outfitColors.lens,
-      emissiveIntensity: 0.12,
+      // A mirrored lens reflects, it does not glow.
+      emissiveIntensity: 0.03,
     });
     const skiTop = new MeshStandardMaterial({
       vertexColors: true,

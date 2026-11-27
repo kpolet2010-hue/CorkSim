@@ -156,6 +156,19 @@
 - Test notes: `Ragdoll.test.ts` "pelvis rotation dies out" and the Vitest worker RPC can exceed their 5 s timeouts
   when the laptop is under background load (also on the untouched baseline). The assertions pass.
 
+## 2026-11-27 (session 4, continued): WP-2C committed, character redesign
+
+- Crash physics approved by the user and committed as `ad81f97`.
+- Character redesign after the user's reference images (render only; simulation untouched):
+  - Outfit: white baggy jacket with a grey/black chevron band and a symmetric fade, tall collar, white baggy
+    pants down to the skis (light boots, no black under the hem), white gloves, white/red poles, pale
+    CORK7 skis, smooth dark-blue helmet, large light-framed goggles with a blue mirrored lens. No logos.
+  - Riding with W: upright and relaxed (was a deep racing tuck); light double-pole push while slow.
+  - Switch: the chest opens towards the travel direction within the approved joint limits; the hands follow
+    the chest and the poles are carried back.
+  - Legs straight from behind: the knee IK pole no longer points outward (no O-legs).
+- Tests: `SkierAnimatorDrive.test.ts` (upright W, pole push, straight legs, frame-rate independence).
+
 ---
 
 _The original pause record follows._

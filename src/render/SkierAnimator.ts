@@ -161,16 +161,32 @@ const ARM = RIG.upperArm + RIG.forearm;
 const PALM = 0.065;
 /** Grab point height above the ski base (top sheet + glove thickness). */
 const GRAB_HEIGHT = 0.05;
+/** Driving forward (W): stance depth and how much the torso straightens from the riding stance (rad). */
+// Upright = hips over the feet and a straight back with a slight natural incline (a fully vertical torso
+// on bent knees puts the shoulders behind the boots and reads as sitting back).
+const DRIVE_CROUCH = 0.15;
+const DRIVE_UPRIGHT = 0.07;
+/** Double-pole push: full below / none above these speeds (m/s, W pushes up to ~7 m/s), cycles per second. */
+const POLE_PUSH_FULL = 4.5;
+const POLE_PUSH_NONE = 8;
+const POLE_PUSH_RATE = 1.15;
+const smoothstep01 = (t: number) => {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
+};
 /** After a crash the recovery crouch holds while the get-up blend lands in it, then stands up (s). */
 const RECOVER_HOLD = GETUP_TIME * 0.8;
 
 // Switch look-back: the yaw needed to see the direction of travel, spread from the hips to the head.
 /** Pelvis opening towards the look side (rad). */
-const LOOK_PELVIS = 0.2;
-/** Spine + chest twist (rad, split evenly over the two bones). */
-const LOOK_SPINE = 0.6;
+const LOOK_PELVIS = 0.22;
+/**
+ * Spine + chest twist (rad, split evenly over the two bones). The shoulders open towards the direction of
+ * travel (user reference 2026-11-27), each bone stays under its 0.4 rad twist limit.
+ */
+const LOOK_SPINE = 0.78;
 /** Neck + head turn (rad, split evenly; a comfortable head turn is about 70 degrees). */
-const LOOK_NECK = 1.2;
+const LOOK_NECK = 1.0;
 /** Largest total look yaw relative to the skis (rad). */
 export const LOOK_MAX = LOOK_PELVIS + LOOK_SPINE + LOOK_NECK;
 /** Neck + head yaw while looking back: linear up to the knee, then approaches the limit softly (rad). */
@@ -291,6 +307,9 @@ export class SkierAnimator {
   private wBrake = 0;
   private wCharge = 0;
   private wTuck = 0;
+  /** Double-pole push weight (W while slow) and its cycle phase 0..1 (advanced with dt). */
+  private wPolePush = 0;
+  private polePhase = 0;
   private wIdle = 1;
   private wSpin = 0;
   private wFlip = 0;
@@ -454,6 +473,11 @@ export class SkierAnimator {
     this.wBrake = damp(this.wBrake, s === 'BRAKING' ? p.brake : 0, 7, dt);
     this.wCharge = damp(this.wCharge, s === 'JUMP_CHARGING' ? 1 : 0, 14, dt);
     this.wTuck = damp(this.wTuck, p.tucking && ground ? 1 : 0, 6, dt);
+    // Double-pole push only while W actually pushes the skier off (slow); carried poles at speed.
+    const pushing = p.tucking && ground && p.state !== 'BRAKING' ? 1 - ramp(POLE_PUSH_FULL, POLE_PUSH_NONE, p.speed) : 0;
+    this.wPolePush = damp(this.wPolePush, pushing, 4, dt);
+    if (this.wPolePush > 0.01) this.polePhase = (this.polePhase + dt * POLE_PUSH_RATE) % 1;
+    else this.polePhase = 0;
     this.wIdle = damp(this.wIdle, s === 'IDLE' && p.speed < 1.5 ? 1 : 0, 3, dt);
     this.updateLook(p, ground, dt);
 
@@ -579,16 +603,30 @@ export class SkierAnimator {
       }
     }
 
-    // Speed tuck: deep, hands in front of the face, poles under the arms.
+    // Driving forward (W): relaxed and upright, not a racing tuck. The back straightens, the head comes up
+    // to look down the slope, and the hands carry the poles a little forward. While slow (W pushes the
+    // skier off), a light double-pole push cycles; it fades out with speed, leaving the poles carried.
     const wt = this.wTuck;
     if (wt > 0.001) {
-      crouch += (0.8 - crouch) * wt;
-      P.s.spinePitch += 0.75 * wt;
-      P.s.neckPitch -= 0.25 * wt;
+      crouch += (DRIVE_CROUCH - crouch) * wt;
+      P.s.spinePitch -= DRIVE_UPRIGHT * wt;
+      P.s.neckPitch -= 0.06 * wt;
+      const wp = wt * this.wPolePush;
+      const u = this.polePhase;
+      // Reach (hands forward and up, tips ahead of the boots) -> push (hands down past the hips, poles
+      // back) -> relaxed recovery swing.
+      const push = u < 0.4 ? smoothstep01(u / 0.4) : 1 - smoothstep01((u - 0.4) / 0.6);
       for (let i = 0; i < 2; i++) {
-        P.hand[i].lerp(_v.set(SIDE[i] * 0.1, -0.2, 0.36), wt);
-        P.pole[i].lerp(_v.set(SIDE[i] * 0.12, -0.18, -0.98).normalize(), wt);
+        const sd = SIDE[i];
+        P.hand[i].lerp(_v.set(sd * 0.26, -0.36, 0.2), wt);
+        P.pole[i].lerp(_v.set(sd * 0.1, -0.6, -0.79).normalize(), wt);
+        if (wp > 0.001) {
+          P.hand[i].lerp(_v.set(sd * (0.27 + 0.03 * push), -0.24 - 0.17 * push, 0.34 - 0.36 * push), wp);
+          P.pole[i].lerp(_v.set(sd * 0.09, -0.95 + 0.4 * push, 0.28 - 1.05 * push).normalize(), wp);
+        }
       }
+      // A slight hinge into the push, back to upright on the recovery.
+      P.s.spinePitch += 0.1 * push * wp;
     }
 
     // Hockey stop: skis across the fall line on the uphill edge, upper body faces down the hill.
@@ -660,11 +698,22 @@ export class SkierAnimator {
       P.s.spineRoll -= side * 0.09 * ws;
       P.s.neckRoll -= side * 0.05 * ws;
       P.s.neckPitch += 0.14 * ws;
+      // The arms turn with the chest (hand targets rotated about the vertical by the torso twist), and
+      // both poles are carried back towards the ski tips, nearly horizontal, as a switch rider does.
+      const twist = look * ((LOOK_PELVIS + LOOK_SPINE) / LOOK_MAX);
+      const ct = Math.cos(twist);
+      const st = Math.sin(twist);
       for (let i = 0; i < 2; i++) {
         const lead = SIDE[i] === side;
         const h = P.hand[i];
         if (lead) h.set(h.x + SIDE[i] * 0.03 * ws, h.y + 0.02 * ws, h.z - 0.1 * ws);
         else h.set(h.x - SIDE[i] * 0.03 * ws, h.y, h.z + 0.07 * ws);
+        const hx = h.x;
+        const hz = h.z;
+        h.x = hx * ct + hz * st;
+        h.z = -hx * st + hz * ct;
+        h.y += 0.06 * ws;
+        P.pole[i].lerp(_v.set(SIDE[i] * 0.08 - side * 0.12, -0.28, 0.95).normalize(), ws);
       }
     }
 
@@ -939,10 +988,10 @@ export class SkierAnimator {
         }
       }
       _target.copy(_ankle).applyMatrix4(m.body.matrixWorld);
-      // Knees point along the ski (plus a little outwards); fall back to "up" when the leg is kicked
-      // forward along the pole axis.
+      // Knees track straight over the skis (an outward knee pole bowed the legs into an "O" from behind);
+      // fall back to "up" when the leg is kicked forward along the pole axis.
       _poleW
-        .set(Math.sin(P.skiRot[i].y) + SIDE[i] * 0.12, 0.05, Math.cos(P.skiRot[i].y))
+        .set(Math.sin(P.skiRot[i].y), 0.05, Math.cos(P.skiRot[i].y))
         .applyQuaternion(_bodyQ);
       _fallbackW.set(0, 1, 0.2).applyQuaternion(_bodyQ);
       solveTwoBoneIK(m.thighs[i], m.shins[i], RIG.thigh, RIG.shin, _target, _poleW, {

@@ -1,4 +1,4 @@
-﻿import { Color, Vector3 } from 'three';
+import { Color, Vector3 } from 'three';
 import { blend, profile, rigid, type GridVertex, type LoftRing, type SkinnedBuilder, type SkinWeights } from './SkinnedBuilder';
 
 /** Colours of the procedural outfit (all sRGB hex). */
@@ -23,6 +23,7 @@ export interface OutfitColors {
   skiBase: number;
   skiSide: number;
   pole: number;
+  poleAccent: number;
   skin: number;
 }
 
@@ -111,22 +112,29 @@ export function buildOutfit(
 // Pants: a seat section on the pelvis plus two baggy legs that blend pelvis -> thigh -> shin and flare
 // over the boot cuffs. Folds come from radial ripples; a cargo pocket bulges on each outer thigh.
 
+/** Depth of the pant hem below the ankle-row origin (rows run from y = 0.98 down to -LEG_HEM). */
+const LEG_HEM = 0.1;
+
 const LEG_ROWS: readonly (readonly number[])[] = [
   // y, rx, rz, zOff, xOff (outwards)
   // Bagginess lives on the shin and the flare over the boot; the thigh is a rounder, tapered tube so a
   // tucked leg reads as a bent leg (not a slab) from behind.
-  [-0.035, 0.114, 0.124, 0.026, 0.004],
-  [0.02, 0.109, 0.117, 0.02, 0.004],
-  [0.1, 0.1, 0.106, 0.012, 0.004],
-  [0.2, 0.09, 0.094, 0.006, 0.004],
-  [0.3, 0.084, 0.088, 0.004, 0.003],
-  [0.39, 0.081, 0.086, 0.006, 0.002],
-  [0.45, 0.082, 0.087, 0.006, 0.002],
-  [0.56, 0.086, 0.089, 0.003, 0.002],
-  [0.68, 0.09, 0.093, 0.0, 0.002],
-  [0.8, 0.094, 0.097, -0.004, 0.0],
-  [0.9, 0.092, 0.097, -0.006, -0.004],
-  [0.98, 0.085, 0.094, -0.006, -0.008],
+  // Baggy freestyle cut (reference 2026-11-27): wide straight legs that pool over the boots down to the
+  // skis (no boot shaft shows between hem and ski).
+  [-0.1, 0.118, 0.158, 0.03, 0.006],
+  [-0.07, 0.124, 0.154, 0.03, 0.006],
+  [-0.035, 0.122, 0.146, 0.03, 0.006],
+  [0.02, 0.12, 0.137, 0.025, 0.006],
+  [0.1, 0.114, 0.125, 0.017, 0.006],
+  [0.2, 0.106, 0.112, 0.01, 0.006],
+  [0.3, 0.1, 0.105, 0.006, 0.005],
+  [0.39, 0.1, 0.105, 0.006, 0.004],
+  [0.45, 0.1, 0.105, 0.006, 0.004],
+  [0.56, 0.102, 0.105, 0.003, 0.004],
+  [0.68, 0.105, 0.107, 0.0, 0.003],
+  [0.8, 0.107, 0.109, -0.004, 0.0],
+  [0.9, 0.102, 0.106, -0.006, -0.004],
+  [0.98, 0.093, 0.101, -0.006, -0.008],
 ];
 
 function buildPants(
@@ -138,7 +146,8 @@ function buildPants(
 ): void {
   inRoot(b);
   const pants = new Color(col.pants);
-  const pantsDark = new Color(col.pants).multiplyScalar(0.78);
+  // White fabric needs deeper fold / seam shading to keep its shape under bright light.
+  const pantsDark = new Color(col.pants).multiplyScalar(0.68);
   const pelvis = rest(bones.pelvis);
   // Seat.
   const SEAT: readonly (readonly number[])[] = [
@@ -179,7 +188,7 @@ function buildPants(
       rings,
       seg(26),
       (r, o) => {
-        const y = 0.98 - (r / rings) * (0.98 + 0.035);
+        const y = 0.98 - (r / rings) * (0.98 + LEG_HEM);
         profile(LEG_ROWS, y, _row);
         o.y = mapY(y);
         o.x = hip.x + sx * _row[3];
@@ -190,12 +199,12 @@ function buildPants(
         o.w = legWeights(bones, i, y);
       },
       (_r, theta, out: GridVertex, ring: LoftRing) => {
-        const y = 0.98 - (_r / rings) * (0.98 + 0.035);
+        const y = 0.98 - (_r / rings) * (0.98 + LEG_HEM);
         const outer = sx > 0 ? Math.cos(theta) : -Math.cos(theta); // 1 at the outer side
         // Folds: long soft ripples plus stacked folds over the boots and behind the knee.
-        let k = 1 + 0.022 * Math.sin(theta * 3 + y * 17 + i * 1.7) * smooth01(0.0, 0.3, y);
-        const stack = Math.pow(Math.max(0, Math.sin(y * 58 + theta * 0.6)), 2) * smooth01(0.28, -0.02, y);
-        k += 0.05 * stack;
+        let k = 1 + 0.03 * Math.sin(theta * 3 + y * 17 + i * 1.7) * smooth01(0.0, 0.3, y);
+        const stack = Math.pow(Math.max(0, Math.sin(y * 58 + theta * 0.6)), 2) * smooth01(0.3, -0.02, y);
+        k += 0.065 * stack;
         const knee = Math.exp(-Math.pow((y - 0.44) / 0.06, 2));
         k += 0.035 * knee * Math.max(0, Math.sin(y * 90)) * (Math.sin(theta) < 0 ? 1 : 0.4);
         // Cargo pocket on the outer thigh.
@@ -206,7 +215,9 @@ function buildPants(
         // Seams and pocket flap darker.
         const seam = smooth01(0.985, 1, Math.abs(outer));
         const flap = pocket > 0.2 && y > 0.69 ? 1 : 0;
-        out.color.copy(pants).lerp(pantsDark, Math.max(seam * 0.8, flap * 0.9, stack * 0.25));
+        // Fold shading follows the ripples so the white legs keep their volume.
+        const fold = Math.max(0, 1 - k) * 4 + stack * 0.15;
+        out.color.copy(pants).lerp(pantsDark, Math.min(1, Math.max(seam * 0.8, flap * 0.9, fold)));
       },
     );
   }
@@ -229,33 +240,54 @@ function legWeights(bones: OutfitBones, i: number, y: number): SkinWeights {
 // drawcords, and sleeves that bunch at the elbows and cuffs.
 
 const TORSO_ROWS: readonly (readonly number[])[] = [
-  // y, rx, rz, zOff
-  [0.78, 0.23, 0.18, -0.008],
-  [0.84, 0.222, 0.171, -0.006],
-  [0.95, 0.2, 0.156, -0.006],
-  [1.06, 0.191, 0.151, 0.0],
-  [1.16, 0.195, 0.149, 0.006],
-  [1.25, 0.199, 0.146, 0.002],
-  [1.31, 0.19, 0.136, -0.005],
-  [1.355, 0.158, 0.12, -0.01],
-  [1.39, 0.115, 0.1, -0.006],
-  [1.415, 0.09, 0.088, 0.0],
+  // y, rx, rz, zOff. Loose, slightly long shell that drapes from the shoulders (no boxy waist).
+  [0.75, 0.222, 0.17, 0.0],
+  [0.8, 0.222, 0.17, 0.0],
+  [0.9, 0.212, 0.164, -0.003],
+  [1.0, 0.198, 0.158, -0.002],
+  [1.1, 0.2, 0.158, 0.004],
+  [1.18, 0.2, 0.155, 0.004],
+  [1.25, 0.188, 0.148, 0.002],
+  [1.3, 0.17, 0.138, -0.004],
+  [1.345, 0.146, 0.124, -0.008],
+  [1.38, 0.122, 0.106, -0.008],
+  [1.415, 0.094, 0.09, 0.0],
 ];
 
 const SLEEVE_ROWS: readonly (readonly number[])[] = [
-  // y (rest, absolute), rx, rz
+  // y (rest, absolute), rx, rz. Roomy sleeves, tapering into the glove cuff.
   [0.755, 0.056, 0.057],
-  [0.79, 0.063, 0.064],
-  [0.83, 0.068, 0.068],
+  [0.79, 0.064, 0.065],
+  [0.83, 0.066, 0.067],
   [0.9, 0.064, 0.065],
-  [0.98, 0.066, 0.067],
-  [1.05, 0.07, 0.07],
-  [1.12, 0.073, 0.073],
-  [1.22, 0.077, 0.077],
-  [1.31, 0.081, 0.08],
-  [1.35, 0.074, 0.075],
-  [1.39, 0.048, 0.05],
+  [0.98, 0.068, 0.069],
+  [1.05, 0.073, 0.073],
+  [1.12, 0.077, 0.077],
+  [1.22, 0.082, 0.082],
+  [1.29, 0.081, 0.081],
+  [1.34, 0.07, 0.072],
+  [1.39, 0.044, 0.047],
 ];
+
+/**
+ * Jacket print (original design after the user's reference): white shell, a band of horizontal chevron
+ * stripes across the chest (V pointing down at the centre front, darker towards the sides), and the lower
+ * body fading to charcoal, more on the skier's left. Returns the dark-ink amount 0..1.
+ */
+function jacketInk(y: number, lat: number): number {
+  let ink = 0;
+  if (y > 0.96 && y < 1.3) {
+    const yy = y + 0.06 * Math.abs(lat);
+    const s = (yy - 0.96) / 0.05;
+    const f = s - Math.floor(s);
+    const stripe = smooth01(0.0, 0.05, f) * smooth01(0.58, 0.5, f);
+    const band = smooth01(0.96, 1.01, y) * smooth01(1.3, 1.23, y);
+    ink = stripe * band * (0.6 + 0.4 * smooth01(0.0, 0.9, Math.abs(lat)));
+  }
+  // Symmetric left/right: a one-sided fade made the hips read as skewed from behind.
+  const fade = smooth01(1.04, 0.8, y) * (0.5 + 0.2 * Math.abs(lat));
+  return Math.min(1, Math.max(ink, fade));
+}
 
 function torsoWeights(bones: OutfitBones, y: number, x: number): SkinWeights {
   if (y < 0.98) return blend(bones.pelvis, bones.spine, 0.1 + 0.9 * smooth01(0.86, 0.98, y));
@@ -282,7 +314,7 @@ function buildJacket(
   const shade = new Color(col.jacket).multiplyScalar(0.82);
   const dy = rest(bones.chest).y - 1.2;
   const top = 1.415;
-  const bottom = 0.78;
+  const bottom = 0.75;
   const rings = seg(40);
   b.loft(
     rings,
@@ -306,71 +338,49 @@ function buildJacket(
       out.p.x = ring.x + (out.p.x - ring.x) * k;
       out.p.z = ring.z + (out.p.z - ring.z) * k;
       out.w = torsoWeights(bones, y, out.p.x);
-      // Colour blocking: yoke over the shoulders, hem band, piping lines, darker side panels.
-      const yokeLine = 1.235 + 0.035 * Math.abs(Math.cos(theta));
-      let c = jacket;
-      if (y > yokeLine) c = accent;
-      else if (y < 0.825) c = accent;
-      else if (Math.abs(Math.cos(theta)) > 0.93) c = shade;
-      out.color.copy(c);
-      if (Math.abs(y - yokeLine) < 0.009 || Math.abs(y - 0.825) < 0.008) out.color.copy(trim);
-      // Kangaroo-pocket seam lines on the front.
-      if (front > 0.55 && y > 0.86 && y < 1.0 && Math.abs(Math.abs(Math.cos(theta)) - 0.42) < 0.05)
-        out.color.copy(shade);
+      // Print: chevron band and dark fade over a white shell; soft shading in the side seams.
+      const lat = Math.cos(theta);
+      out.color.copy(jacket).lerp(accent, jacketInk(y, lat));
+      if (Math.abs(lat) > 0.95) out.color.multiply(_c2.copy(shade).lerp(jacket, 0.4));
+      // Hand-pocket seams on the front.
+      if (front > 0.55 && y > 0.86 && y < 0.98 && Math.abs(Math.abs(lat) - 0.42) < 0.012)
+        out.color.multiplyScalar(0.8);
     },
   );
 
   // Zipper down the front.
   const zip: Vector3[] = [];
   for (let k = 0; k <= 16; k++) {
-    const y = 0.79 + (k / 16) * (1.47 - 0.79);
+    const y = 0.76 + (k / 16) * (1.5 - 0.76);
     profile(TORSO_ROWS, Math.min(y, 1.41), _row);
-    const z = y > 1.37 ? 0.107 : _row[2] + _row[1] * 1.035;
+    const z = y > 1.37 ? 0.112 : _row[2] + _row[1] * 1.035;
     zip.push(new Vector3(0, y + dy, z + 0.002));
   }
-  b.tube(zip, 0.005, _c.set(col.jacketAccent).multiplyScalar(0.55), (k) => torsoWeights(bones, zip[k].y - dy, 0), 5);
+  b.tube(zip, 0.004, _c.copy(trim).multiplyScalar(0.8), (k) => torsoWeights(bones, zip[k].y - dy, 0), 5);
 
-  // Collar.
+  // Tall funnel collar (zipped up to the chin), white with a soft rolled top edge.
+  const collarRings = seg(6);
   b.loft(
-    seg(4),
-    seg(20),
+    collarRings,
+    seg(22),
     (r, o) => {
-      const t = r / seg(4);
-      const y = 1.475 - t * 0.11;
+      const t = r / collarRings; // 0 top .. 1 bottom
+      const y = 1.49 - t * 0.11;
       o.y = y + dy;
-      o.z = 0.004;
-      o.rx = 0.097 + t * 0.008;
-      o.rz = 0.1 + t * 0.006;
-      o.color.copy(accent);
+      o.z = 0.006 + 0.004 * t;
+      o.rx = 0.099 + t * 0.012;
+      o.rz = 0.104 + t * 0.01;
+      o.color.copy(jacket);
       if (r === 0) o.color.copy(trim);
-      o.w = blend(bones.chest, bones.neck, 0.6 * (1 - t));
+      o.w = blend(bones.chest, bones.neck, 0.75 * (1 - t));
+    },
+    (_r, theta, out, ring) => {
+      // Soft vertical creases where the collar bunches.
+      const k = 1 + 0.03 * Math.max(0, Math.sin(theta * 7 + 0.4));
+      out.p.x = ring.x + (out.p.x - ring.x) * k;
+      out.p.z = ring.z + (out.p.z - ring.z) * k;
     },
   );
-
-  // Bunched hood on the back with a rolled rim.
-  const hoodC = new Vector3(0, 1.372 + dy, -0.108);
-  b.ellipsoid(hoodC, 0.112, 0.058, 0.055, accent, blend(bones.chest, bones.neck, 0.15), seg(8), seg(16), (phi, theta, out) => {
-    // Flatten the side touching the back and add a dent where the hood folds.
-    if (out.p.z > hoodC.z) out.p.z = hoodC.z + (out.p.z - hoodC.z) * 0.45;
-    out.p.y += 0.012 * Math.cos(theta * 2) * Math.sin(phi);
-    out.p.x *= 1 + 0.06 * Math.sin(phi * 3);
-  });
-  const rim: Vector3[] = [];
-  for (let k = 0; k <= 10; k++) {
-    const a = (k / 10) * Math.PI;
-    rim.push(new Vector3(Math.cos(a) * 0.1, 1.41 + dy + Math.sin(a) * 0.016, -0.08 - Math.sin(a) * 0.065));
-  }
-  b.tube(rim, 0.011, jacket, blend(bones.chest, bones.neck, 0.2), 6);
-  // Drawcords.
-  for (const sx of [1, -1]) {
-    b.tube(
-      [new Vector3(sx * 0.032, 1.43 + dy, 0.104), new Vector3(sx * 0.036, 1.39 + dy, 0.116), new Vector3(sx * 0.034, 1.35 + dy, 0.124)],
-      0.0035,
-      trim,
-      rigid(bones.chest),
-      5,
-    );
-  }
 
   // Sleeves.
   for (let i = 0; i < 2; i++) {
@@ -399,13 +409,13 @@ function buildJacket(
         const k = 1 + (0.05 * elbow + 0.045 * cuff) * Math.max(0, Math.sin(y * 85 + theta * 0.8)) + 0.012 * Math.sin(theta * 3 + y * 11);
         out.p.x = ring.x + (out.p.x - ring.x) * k;
         out.p.z = ring.z + (out.p.z - ring.z) * k;
-        let c = y > 1.27 ? accent : jacket;
-        if (y < 0.8) c = accent;
-        out.color.copy(c);
-        if (Math.abs(y - 0.8) < 0.008) out.color.copy(trim);
-        // Stripe down the outside of the sleeve.
+        // White sleeves fading slightly towards the cuff, the same on both sides.
+        const fade = 0.4 * smooth01(1.3, 0.84, y);
+        out.color.copy(jacket).lerp(accent, fade);
+        if (y < 0.8) out.color.copy(accent).lerp(jacket, 0.12);
+        // Subtle seam down the outside of the sleeve.
         const outer = sx > 0 ? Math.cos(theta) : -Math.cos(theta);
-        if (outer > 0.965 && y > 0.8 && y < 1.27) out.color.copy(trim);
+        if (outer > 0.975 && y > 0.8) out.color.multiplyScalar(0.88);
       },
     );
   }
@@ -465,21 +475,22 @@ function buildHead(
   f.ellipsoid(new Vector3(0, -0.005, 0.008), 0.088, 0.112, 0.1, _c.set(col.skin), rigid(bones.head), seg(10), seg(14));
   f.ellipsoid(new Vector3(0, -0.012, 0.1), 0.014, 0.022, 0.016, _c.set(col.skin), rigid(bones.head), 5, 8);
 
-  // Helmet shell.
+  // Helmet (user reference 2026-11-27): a smooth, rounded, matte shell that comes down over the ears;
+  // no brim, vents or graphics. The goggles sit on its front edge.
   inBone(h, head);
   const helmet = new Color(col.helmet);
-  const cx = 0;
-  const cy = 0.02;
-  const cz = -0.006;
-  const rx = 0.125;
-  const ry = 0.13;
-  const rz = 0.143;
-  const rows = seg(12);
-  const cols = seg(30);
+  const cy = 0.022;
+  const cz = -0.008;
+  const rx = 0.128;
+  const ry = 0.132;
+  const rz = 0.145;
+  const rows = seg(16);
+  const cols = seg(36);
+  // Lower edge: high over the goggles at the front, down over the ears at the sides, nape at the back.
   const phiMax = (theta: number) => {
     const fr = Math.max(0, Math.sin(theta));
     const bk = Math.max(0, -Math.sin(theta));
-    return 2.02 + (1.2 - 2.02) * Math.pow(fr, 1.4) + (2.33 - 2.02) * bk;
+    return 2.2 + (1.22 - 2.2) * Math.pow(fr, 1.6) + (2.3 - 2.2) * bk;
   };
   const edge: Vector3[] = [];
   h.grid(
@@ -488,63 +499,26 @@ function buildHead(
     (r, c, out) => {
       const theta = (c / cols) * Math.PI * 2;
       const phi = (r / rows) * phiMax(theta);
-      let x = Math.sin(phi) * Math.cos(theta) * rx;
-      const y = Math.cos(phi) * ry;
-      let z = Math.sin(phi) * Math.sin(theta) * rz;
-      // Central ridge and slightly squarer sides.
-      const ridge = 1 + 0.035 * Math.exp(-Math.pow(x / 0.035, 2)) * Math.max(0, Math.cos(phi));
-      x *= ridge;
-      z *= ridge;
-      out.p.set(cx + x, cy + y * ridge, cz + z);
+      out.p.set(Math.sin(phi) * Math.cos(theta) * rx, cy + Math.cos(phi) * ry, cz + Math.sin(phi) * Math.sin(theta) * rz);
       out.color.copy(helmet);
       out.w = rigid(bones.head);
       if (r === rows && c < cols) edge.push(out.p.clone());
     },
     { wrap: true, flip: true },
   );
+  // Rolled lower edge in the shell colour (a soft rim, not a dark trim line).
   edge.push(edge[0].clone());
-  h.tube(edge, 0.0065, _c.set(col.goggleFrame), rigid(bones.head), 5);
-  // Vents (dark slots along the top).
-  const ventC = _c2.set(col.goggleFrame);
-  for (const [vx, vz] of [
-    [0.034, 0.045],
-    [-0.034, 0.045],
-    [0.036, -0.045],
-    [-0.036, -0.045],
-    [0, -0.095],
-  ]) {
-    const vy = cy + ry * Math.sqrt(Math.max(0, 1 - (vx / rx) ** 2 - ((vz - cz) / rz) ** 2)) * 1.0;
-    h.roundedBox(new Vector3(vx, vy - 0.002, vz), 0.008, 0.005, 0.03, ventC, rigid(bones.head), 4);
-  }
-  // Brim over the goggles.
-  const brimRows = 1;
-  const brimCols = seg(12);
-  for (const side of [0, 1]) {
-    h.grid(
-      brimRows,
-      brimCols,
-      (r, c, out) => {
-        const a = Math.PI / 2 + ((c / brimCols) * 2 - 1) * 0.75;
-        const reach = r === 0 ? 0.0 : 0.024;
-        const y = 0.071 - r * 0.012 - side * 0.006;
-        out.p.set(Math.cos(a) * (rx + 0.004 + reach), y, cz + Math.sin(a) * (rz + 0.004 + reach));
-        out.color.copy(helmet);
-        out.w = rigid(bones.head);
-      },
-      { flip: side === 0 },
-    );
-  }
-  // Ear pads.
-  for (const sx of [1, -1]) {
-    h.roundedBox(new Vector3(sx * 0.123, -0.035, -0.004), 0.016, 0.042, 0.046, _c.set(col.goggleFrame), rigid(bones.head), 3);
-  }
+  h.tube(edge, 0.006, _c.copy(helmet).multiplyScalar(0.85), rigid(bones.head), 5);
 
-  // Goggles: frame (swept rectangle) + mirrored lens + strap.
-  const arcCols = seg(22);
-  const a0 = 1.22;
-  const gy0 = -0.02;
-  const gy1 = 0.064;
-  const R = (a: number, outer: number) => 0.114 + outer * 0.017 + 0.004 * Math.cos(a);
+  // Goggles: a large frame band in front of the face, overlapping the helmet's front edge, with a wide
+  // curved lens and a wide strap around the helmet.
+  const arcCols = seg(26);
+  const a0 = 1.28;
+  const gy0 = -0.036;
+  const gy1 = 0.07;
+  // Frame radius around the head: proud of the face, curving back towards the temples.
+  const R = (a: number, outer: number) => 0.125 + outer * 0.022 + 0.006 * Math.cos(a);
+  const frame = _c.set(col.goggleFrame).clone();
   h.grid(
     arcCols,
     4,
@@ -552,43 +526,49 @@ function buildHead(
       const a = -a0 + (r / arcCols) * 2 * a0;
       const outer = c === 1 || c === 2 ? 1 : 0;
       const y = c === 2 || c === 3 ? gy1 : gy0;
-      const rad = R(a, outer);
-      out.p.set(Math.sin(a) * rad, y - 0.006 * (1 - Math.cos(a)), Math.cos(a) * rad);
-      out.color.copy(_c.set(col.goggleFrame));
+      // Rounded top and bottom corners towards the temples.
+      const pinch = 0.012 * Math.pow(Math.abs(a) / a0, 4);
+      out.p.set(Math.sin(a) * R(a, outer), (c === 2 || c === 3 ? y - pinch : y + pinch) - 0.008 * (1 - Math.cos(a)), Math.cos(a) * R(a, outer));
+      out.color.copy(frame);
       out.w = rigid(bones.head);
     },
     { wrap: true },
   );
   inBone(B.lens, head);
-  const lensRows = 6;
+  const lensRows = 8;
+  const lensCols = seg(26);
   B.lens.grid(
     lensRows,
-    seg(22),
+    lensCols,
     (r, c, out) => {
-      const a = -1.08 + (c / seg(22)) * 2 * 1.08;
+      const a = -(a0 - 0.12) + (c / lensCols) * 2 * (a0 - 0.12);
       const t = r / lensRows;
-      const y = gy1 - 0.009 - t * (gy1 - gy0 - 0.018);
+      const pinch = 0.012 * Math.pow(Math.abs(a) / a0, 4);
+      const top = gy1 - 0.01 - pinch;
+      const bot = gy0 + 0.01 + pinch;
+      const y = top - t * (top - bot);
       const bulge = 1 - Math.pow((t - 0.5) * 2, 2);
-      const rad = R(a, 1) + 0.004 + 0.006 * bulge * Math.cos(a * 0.9);
-      out.p.set(Math.sin(a) * rad, y - 0.006 * (1 - Math.cos(a)), Math.cos(a) * rad);
+      const rad = R(a, 1) + 0.002 + 0.007 * bulge * Math.cos(a * 0.8);
+      out.p.set(Math.sin(a) * rad, y - 0.008 * (1 - Math.cos(a)), Math.cos(a) * rad);
       out.color.set(1, 1, 1);
       out.w = rigid(bones.head);
     },
     {},
   );
-  // Strap around the back of the helmet.
+  // Wide strap around the helmet (on the shell, behind the frame ends).
   inBone(f, head);
-  const strapCols = seg(20);
+  const strapCols = seg(28);
   const strapA = new Color(col.gaiterAccent);
-  const strapB = new Color(col.goggleFrame);
+  const strapB = new Color(col.gaiter);
+  const sy0 = gy0 + 0.018;
+  const sy1 = gy1 - 0.018;
   f.grid(
     1,
     strapCols,
     (r, c, out) => {
-      const a = a0 - 0.05 + (c / strapCols) * (Math.PI * 2 - 2 * (a0 - 0.05));
-      const y = r === 0 ? gy1 - 0.012 : gy0 + 0.01;
-      out.p.set(Math.sin(a) * (rx + 0.006), y, cz + Math.cos(a) * (rz + 0.006));
-      out.color.copy(Math.sin(c * 1.3) > 0 ? strapA : strapB);
+      const a = a0 - 0.02 + (c / strapCols) * (Math.PI * 2 - 2 * (a0 - 0.02));
+      out.p.set(Math.sin(a) * (rx + 0.007), r === 0 ? sy1 : sy0, cz + Math.cos(a) * (rz + 0.007));
+      out.color.copy(c % 4 < 2 ? strapA : strapB);
       out.w = rigid(bones.head);
     },
     { flip: true },
@@ -600,18 +580,19 @@ function buildHead(
 
 function buildGlove(b: SkinnedBuilder, bone: number, rest: Vector3, col: OutfitColors, seg: (n: number) => number): void {
   inBone(b, rest);
+  // Puffy white mitts with a slightly greyer gauntlet cuff.
   const glove = new Color(col.gloves);
-  const cuff = new Color(col.jacketAccent);
+  const cuff = new Color(col.gloves).multiplyScalar(0.86);
   const rings = seg(5);
   b.loft(rings, seg(14), (r, o) => {
     const t = r / rings;
     o.y = 0.035 - t * 0.065;
-    o.rx = 0.05 - t * 0.008;
-    o.rz = 0.052 - t * 0.006;
+    o.rx = 0.054 - t * 0.008;
+    o.rz = 0.056 - t * 0.006;
     o.color.copy(r <= 1 ? cuff : glove);
     o.w = rigid(bone);
   });
-  b.ellipsoid(new Vector3(0, -0.068, 0.006), 0.035, 0.056, 0.047, glove, rigid(bone), seg(8), seg(12), (phi, _t, out) => {
+  b.ellipsoid(new Vector3(0, -0.07, 0.006), 0.04, 0.06, 0.052, glove, rigid(bone), seg(8), seg(12), (phi, _t, out) => {
     // Flatter palm side, squarer knuckles.
     out.p.y -= 0.006 * Math.pow(Math.sin(phi), 4);
   });
@@ -639,8 +620,8 @@ function buildPole(
     [0.078, 0.017],
   ];
   inBone(B.hard, rest);
-  const gripC = new Color(col.goggleFrame);
-  const ringC = new Color(col.skiAccent);
+  const gripC = new Color(col.pole);
+  const ringC = new Color(col.poleAccent);
   const gr = 8;
   B.hard.loft(
     gr,
@@ -657,16 +638,19 @@ function buildPole(
     undefined,
     { capStart: true },
   );
-  B.hard.ellipsoid(new Vector3(0, -length + 0.085, 0), 0.036, 0.007, 0.036, _c.set(col.skiAccent), rigid(bone), 4, seg(12));
-  inBone(B.metal, rest);
-  B.metal.loft(3, seg(8), (r, o) => {
-    const t = r / 3;
+  B.hard.ellipsoid(new Vector3(0, -length + 0.085, 0), 0.036, 0.007, 0.036, _c.set(col.poleAccent), rigid(bone), 4, seg(12));
+  // Painted (white) shaft with red graphic bands below the grip and above the basket.
+  const shaftRings = 24;
+  B.hard.loft(shaftRings, seg(8), (r, o) => {
+    const t = r / shaftRings;
     o.y = -0.09 - t * (length - 0.09 - 0.03);
     o.rx = 0.0095 - t * 0.0025;
     o.rz = o.rx;
-    o.color.set(col.pole);
+    const band = (t > 0.06 && t < 0.1) || (t > 0.14 && t < 0.3) || (t > 0.86 && t < 0.9);
+    o.color.set(band ? col.poleAccent : col.pole);
     o.w = rigid(bone);
   });
+  inBone(B.metal, rest);
   B.metal.loft(
     1,
     6,
@@ -704,8 +688,9 @@ function buildBoot(B: OutfitBuilders, bone: number, rest: Vector3, sx: number, c
   inBone(h, rest);
   const shell = new Color(col.boots);
   const cuff = new Color(col.bootCuff);
-  const sole = new Color(0x15171a);
-  const strap = new Color(0x1b1e22);
+  // Sole and power strap follow the (light) boot instead of black: nothing dark shows under the pant hem.
+  const sole = new Color(col.boots).multiplyScalar(0.55);
+  const strap = new Color(col.bootCuff).multiplyScalar(0.85);
   const rings = seg(18);
   const top = 0.158;
   const bot = -0.096;
